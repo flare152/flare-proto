@@ -1,0 +1,371 @@
+syntax = "proto3";
+
+package flare.media.v1;
+
+import "google/protobuf/timestamp.proto";
+import "common/errors.proto";
+import "common/metadata.proto";
+
+// 媒体服务
+service MediaService {
+  // 上传文件 (流式)
+  rpc UploadFile(stream UploadFileRequest) returns (UploadFileResponse);
+  // 初始化分片上传
+  rpc InitiateMultipartUpload(InitiateMultipartUploadRequest) returns (InitiateMultipartUploadResponse);
+  // 上传单个分片
+  rpc UploadMultipartChunk(UploadMultipartChunkRequest) returns (UploadMultipartChunkResponse);
+  // 完成分片上传
+  rpc CompleteMultipartUpload(CompleteMultipartUploadRequest) returns (UploadFileResponse);
+  // 取消分片上传
+  rpc AbortMultipartUpload(AbortMultipartUploadRequest) returns (AbortMultipartUploadResponse);
+  
+  // 创建媒资引用
+  rpc CreateReference(CreateReferenceRequest) returns (CreateReferenceResponse);
+  
+  // 删除媒资引用
+  rpc DeleteReference(DeleteReferenceRequest) returns (DeleteReferenceResponse);
+  
+  // 列出媒资引用
+  rpc ListReferences(ListReferencesRequest) returns (ListReferencesResponse);
+  
+  // 清理孤立媒资
+  rpc CleanupOrphanedAssets(CleanupOrphanedAssetsRequest) returns (CleanupOrphanedAssetsResponse);
+  
+  // 获取文件URL
+  rpc GetFileUrl(GetFileUrlRequest) returns (GetFileUrlResponse);
+  
+  // 获取文件信息
+  rpc GetFileInfo(GetFileInfoRequest) returns (GetFileInfoResponse);
+  
+  // 删除文件
+  rpc DeleteFile(DeleteFileRequest) returns (DeleteFileResponse);
+  
+  // 处理图片
+  rpc ProcessImage(ProcessImageRequest) returns (ProcessImageResponse);
+  
+  // 处理视频
+  rpc ProcessVideo(ProcessVideoRequest) returns (ProcessVideoResponse);
+}
+
+// 上传文件请求
+message UploadFileRequest {
+  oneof request {
+    UploadFileMetadata metadata = 1;  // 第一次请求
+    bytes chunk_data = 2;             // 后续请求
+  }
+}
+
+message UploadFileMetadata {
+  string file_name = 1;
+  string mime_type = 2;
+  int64 file_size = 3;
+  FileType file_type = 4;
+  string upload_id = 5;                // 客户端生成
+  flare.common.v1.RequestContext context = 6;
+  flare.common.v1.TenantContext tenant = 7;
+  map<string, string> metadata = 8;
+  string user_id = 9;
+  string trace_id = 10;
+  string namespace = 11;
+  string business_tag = 12;
+}
+
+enum FileType {
+  FILE_TYPE_UNSPECIFIED = 0;
+  FILE_TYPE_IMAGE = 1;
+  FILE_TYPE_VIDEO = 2;
+  FILE_TYPE_AUDIO = 3;
+  FILE_TYPE_DOCUMENT = 4;
+  FILE_TYPE_OTHER = 5;
+}
+
+// 上传文件响应
+message UploadFileResponse {
+  string file_id = 1;
+  string url = 2;
+  string cdn_url = 3;
+  FileInfo info = 4;
+  bool success = 5;
+  string error_message = 6;
+  flare.common.v1.RpcStatus status = 7;
+}
+
+// 文件信息
+message FileInfo {
+  string file_id = 1;
+  string file_name = 2;
+  string mime_type = 3;
+  int64 size = 4;
+  string url = 5;
+  string cdn_url = 6;
+  google.protobuf.Timestamp created_at = 7;
+  map<string, string> metadata = 8;
+  flare.common.v1.TenantContext tenant = 9;
+  uint64 reference_count = 10;
+  string status = 11;
+  string sha256 = 12;
+  string md5 = 13;
+  google.protobuf.Timestamp grace_expires_at = 14;
+}
+
+message MediaReferenceInfo {
+  string reference_id = 1;
+  string file_id = 2;
+  string namespace = 3;
+  string owner_id = 4;
+  string business_tag = 5;
+  map<string, string> metadata = 6;
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp expires_at = 8;
+}
+
+message CreateReferenceRequest {
+  string file_id = 1;
+  string namespace = 2;
+  string owner_id = 3;
+  string business_tag = 4;
+  map<string, string> metadata = 5;
+  flare.common.v1.RequestContext context = 6;
+  flare.common.v1.TenantContext tenant = 7;
+}
+
+message CreateReferenceResponse {
+  FileInfo info = 1;
+  bool success = 2;
+  string error_message = 3;
+  flare.common.v1.RpcStatus status = 4;
+}
+
+message DeleteReferenceRequest {
+  string file_id = 1;
+  string reference_id = 2;
+  flare.common.v1.RequestContext context = 3;
+  flare.common.v1.TenantContext tenant = 4;
+}
+
+message DeleteReferenceResponse {
+  FileInfo info = 1;
+  bool success = 2;
+  string error_message = 3;
+  flare.common.v1.RpcStatus status = 4;
+}
+
+message ListReferencesRequest {
+  string file_id = 1;
+  flare.common.v1.Pagination pagination = 2;
+  flare.common.v1.RequestContext context = 3;
+  flare.common.v1.TenantContext tenant = 4;
+}
+
+message ListReferencesResponse {
+  repeated MediaReferenceInfo references = 1;
+  flare.common.v1.Pagination pagination = 2;
+  bool success = 3;
+  string error_message = 4;
+  flare.common.v1.RpcStatus status = 5;
+}
+
+message CleanupOrphanedAssetsRequest {
+  uint32 limit = 1;
+  flare.common.v1.RequestContext context = 2;
+  flare.common.v1.TenantContext tenant = 3;
+}
+
+message CleanupOrphanedAssetsResponse {
+  repeated string file_ids = 1;
+  bool success = 2;
+  string error_message = 3;
+  flare.common.v1.RpcStatus status = 4;
+}
+
+message InitiateMultipartUploadRequest {
+  UploadFileMetadata metadata = 1;
+  int64 desired_chunk_size = 2;
+  flare.common.v1.RequestContext context = 3;
+  flare.common.v1.TenantContext tenant = 4;
+}
+
+message InitiateMultipartUploadResponse {
+  string upload_id = 1;
+  int64 chunk_size = 2;
+  google.protobuf.Timestamp expires_at = 3;
+  bool success = 4;
+  string error_message = 5;
+  flare.common.v1.RpcStatus status = 6;
+}
+
+message UploadMultipartChunkRequest {
+  string upload_id = 1;
+  uint32 chunk_index = 2;
+  bytes payload = 3;
+  flare.common.v1.RequestContext context = 4;
+}
+
+message UploadMultipartChunkResponse {
+  string upload_id = 1;
+  uint32 chunk_index = 2;
+  uint64 uploaded_size = 3;
+  google.protobuf.Timestamp expires_at = 4;
+  bool success = 5;
+  string error_message = 6;
+  flare.common.v1.RpcStatus status = 7;
+}
+
+message CompleteMultipartUploadRequest {
+  string upload_id = 1;
+  flare.common.v1.RequestContext context = 2;
+  flare.common.v1.TenantContext tenant = 3;
+}
+
+message AbortMultipartUploadRequest {
+  string upload_id = 1;
+  flare.common.v1.RequestContext context = 2;
+}
+
+message AbortMultipartUploadResponse {
+  bool success = 1;
+  string error_message = 2;
+  flare.common.v1.RpcStatus status = 3;
+}
+
+// 获取文件URL请求
+message GetFileUrlRequest {
+  string file_id = 1;
+  int32 expires_in = 2;                // 过期时间(秒)，默认 3600
+  flare.common.v1.RequestContext context = 3;
+  flare.common.v1.TenantContext tenant = 4;
+}
+
+// 获取文件URL响应
+message GetFileUrlResponse {
+  string url = 1;
+  string cdn_url = 2;
+  google.protobuf.Timestamp expires_at = 3;
+  bool success = 4;
+  string error_message = 5;
+  flare.common.v1.RpcStatus status = 6;
+}
+
+// 获取文件信息请求
+message GetFileInfoRequest {
+  string file_id = 1;
+  flare.common.v1.RequestContext context = 2;
+  flare.common.v1.TenantContext tenant = 3;
+}
+
+// 获取文件信息响应
+message GetFileInfoResponse {
+  FileInfo info = 1;
+  bool success = 2;
+  string error_message = 3;
+  flare.common.v1.RpcStatus status = 4;
+}
+
+// 删除文件请求
+message DeleteFileRequest {
+  string file_id = 1;
+  flare.common.v1.RequestContext context = 2;
+  flare.common.v1.TenantContext tenant = 3;
+}
+
+// 删除文件响应
+message DeleteFileResponse {
+  bool success = 1;
+  string error_message = 2;
+  flare.common.v1.RpcStatus status = 3;
+}
+
+// 处理图片请求
+message ProcessImageRequest {
+  string file_id = 1;
+  repeated ImageOperation operations = 2;
+  flare.common.v1.RequestContext context = 3;
+  flare.common.v1.TenantContext tenant = 4;
+}
+
+message ImageOperation {
+  oneof operation {
+    ResizeOperation resize = 1;
+    CompressOperation compress = 2;
+    ThumbnailOperation thumbnail = 3;
+    WatermarkOperation watermark = 4;
+  }
+}
+
+message ResizeOperation {
+  int32 width = 1;
+  int32 height = 2;
+  bool keep_aspect_ratio = 3;
+}
+
+message CompressOperation {
+  int32 quality = 1;                  // 1-100
+}
+
+message ThumbnailOperation {
+  int32 size = 1;                     // 最大尺寸
+}
+
+message WatermarkOperation {
+  string text = 1;
+  WatermarkPosition position = 2;
+}
+
+enum WatermarkPosition {
+  WATERMARK_POSITION_UNSPECIFIED = 0;
+  WATERMARK_POSITION_TOP_LEFT = 1;
+  WATERMARK_POSITION_TOP_RIGHT = 2;
+  WATERMARK_POSITION_BOTTOM_LEFT = 3;
+  WATERMARK_POSITION_BOTTOM_RIGHT = 4;
+  WATERMARK_POSITION_CENTER = 5;
+}
+
+// 处理图片响应
+message ProcessImageResponse {
+  string processed_file_id = 1;
+  string url = 2;
+  string cdn_url = 3;
+  bool success = 4;
+  string error_message = 5;
+  flare.common.v1.RpcStatus status = 6;
+}
+
+// 处理视频请求
+message ProcessVideoRequest {
+  string file_id = 1;
+  repeated VideoOperation operations = 2;
+  flare.common.v1.RequestContext context = 3;
+  flare.common.v1.TenantContext tenant = 4;
+}
+
+message VideoOperation {
+  oneof operation {
+    TranscodeOperation transcode = 1;
+    ExtractThumbnailOperation extract_thumbnail = 2;
+    CompressVideoOperation compress = 3;
+  }
+}
+
+message TranscodeOperation {
+  string format = 1;                  // mp4, webm, etc.
+  string quality = 2;                 // high, medium, low
+}
+
+message ExtractThumbnailOperation {
+  double time = 1;                    // 时间点（秒）
+}
+
+message CompressVideoOperation {
+  int32 bitrate = 1;                   // 比特率
+}
+
+// 处理视频响应
+message ProcessVideoResponse {
+  string processed_file_id = 1;
+  string url = 2;
+  string cdn_url = 3;
+  bool success = 4;
+  string error_message = 5;
+  flare.common.v1.RpcStatus status = 6;
+}
+

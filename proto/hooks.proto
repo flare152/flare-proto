@@ -1,0 +1,112 @@
+syntax = "proto3";
+
+package flare.hooks.v1;
+
+import "google/protobuf/timestamp.proto";
+import "common/errors.proto";
+import "common/metadata.proto";
+
+// Hook 调用基础上下文
+message HookInvocationContext {
+  string tenant_id = 1;
+  string session_id = 2;
+  string session_type = 3;
+  string message_type = 4;
+  string sender_id = 5;
+  string trace_id = 6;
+  map<string, string> tags = 7;
+  flare.common.v1.RequestContext request_context = 8;
+  flare.common.v1.TenantContext tenant = 9;
+  map<string, string> attributes = 10;
+}
+
+// 消息草稿（Pre-Send 阶段可以修改）
+message HookMessageDraft {
+  string message_id = 1;
+  string client_message_id = 2;
+  string conversation_id = 3;
+  bytes payload = 4;
+  map<string, string> headers = 5;
+  map<string, string> metadata = 6;
+}
+
+// 消息持久化记录
+message HookMessageRecord {
+  string message_id = 1;
+  string client_message_id = 2;
+  string conversation_id = 3;
+  string sender_id = 4;
+  string session_type = 5;
+  string message_type = 6;
+  google.protobuf.Timestamp persisted_at = 7;
+  map<string, string> metadata = 8;
+}
+
+// 投递事件
+message HookDeliveryEvent {
+  string message_id = 1;
+  string user_id = 2;
+  string channel = 3;
+  google.protobuf.Timestamp delivered_at = 4;
+  map<string, string> metadata = 5;
+}
+
+// 撤回事件
+message HookRecallEvent {
+  string message_id = 1;
+  string operator_id = 2;
+  google.protobuf.Timestamp recalled_at = 3;
+  map<string, string> metadata = 4;
+}
+
+message PreSendHookRequest {
+  HookInvocationContext context = 1;
+  HookMessageDraft draft = 2;
+}
+
+message PreSendHookResponse {
+  bool allow = 1;
+  HookMessageDraft draft = 2;
+  flare.common.v1.RpcStatus status = 3;
+  map<string, string> tags = 4;
+}
+
+message PostSendHookRequest {
+  HookInvocationContext context = 1;
+  HookMessageRecord record = 2;
+  HookMessageDraft draft = 3;
+}
+
+message PostSendHookResponse {
+  bool success = 1;
+  flare.common.v1.RpcStatus status = 2;
+}
+
+message DeliveryHookRequest {
+  HookInvocationContext context = 1;
+  HookDeliveryEvent event = 2;
+}
+
+message DeliveryHookResponse {
+  bool success = 1;
+  flare.common.v1.RpcStatus status = 2;
+}
+
+message RecallHookRequest {
+  HookInvocationContext context = 1;
+  HookRecallEvent event = 2;
+}
+
+message RecallHookResponse {
+  bool success = 1;
+  flare.common.v1.RpcStatus status = 2;
+}
+
+// Hook Service 定义
+service HookExtension {
+  rpc InvokePreSend (PreSendHookRequest) returns (PreSendHookResponse);
+  rpc InvokePostSend (PostSendHookRequest) returns (PostSendHookResponse);
+  rpc NotifyDelivery (DeliveryHookRequest) returns (DeliveryHookResponse);
+  rpc NotifyRecall (RecallHookRequest) returns (RecallHookResponse);
+}
+

@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+package flare.common.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// 请求上下文，用于链路追踪与调试
+message RequestContext {
+  string request_id = 1;
+  string trace_id = 2;
+  string span_id = 3;
+  string client_ip = 4;
+  string user_agent = 5;
+  map<string, string> tags = 6;
+}
+
+// 租户 / 业务上下文
+message TenantContext {
+  string tenant_id = 1;
+  string business_type = 2;
+  string environment = 3;
+  map<string, string> attributes = 4;
+}
+
+// 通用分页结构
+message Pagination {
+  string cursor = 1;
+  int32 limit = 2;
+  bool has_more = 3;
+}
+
+// 媒资附件元数据
+message MediaAttachment {
+  string file_id = 1;
+  string file_name = 2;
+  string mime_type = 3;
+  int64 size = 4;
+  string url = 5;
+  string cdn_url = 6;
+  map<string, string> metadata = 7;
+}
+
+// 审计上下文
+message AuditContext {
+  string operator_id = 1;
+  google.protobuf.Timestamp operated_at = 2;
+  map<string, string> metadata = 3;
+}
+

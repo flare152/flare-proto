@@ -1,0 +1,365 @@
+syntax = "proto3";
+
+package flare.storage.v1;
+
+import "google/protobuf/timestamp.proto";
+import "common/errors.proto";
+import "common/metadata.proto";
+import "communication_core.proto";
+
+// 存储服务
+service StorageService {
+  // 存储消息
+  rpc StoreMessage(StoreMessageRequest) returns (StoreMessageResponse);
+  
+  // 批量存储消息
+  rpc BatchStoreMessage(BatchStoreMessageRequest) returns (BatchStoreMessageResponse);
+  
+  // 查询消息
+  rpc QueryMessages(QueryMessagesRequest) returns (QueryMessagesResponse);
+  
+  // 删除消息
+  rpc DeleteMessage(DeleteMessageRequest) returns (DeleteMessageResponse);
+  
+  // ========== 消息操作相关 ==========
+  
+  // 撤回消息
+  rpc RecallMessage(RecallMessageRequest) returns (RecallMessageResponse);
+  
+  // 用户删除消息（软删除，只影响当前用户）
+  rpc DeleteMessageForUser(DeleteMessageForUserRequest) returns (DeleteMessageForUserResponse);
+  
+  // 清除会话
+  rpc ClearSession(ClearSessionRequest) returns (ClearSessionResponse);
+  
+  // 标记消息已读（用于阅后即焚）
+  rpc MarkMessageRead(MarkMessageReadRequest) returns (MarkMessageReadResponse);
+  
+  // ========== 会话管理相关 ==========
+  
+  // 创建会话
+  rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
+  
+  // 获取会话信息
+  rpc GetSession(GetSessionRequest) returns (GetSessionResponse);
+  
+  // 更新会话
+  rpc UpdateSession(UpdateSessionRequest) returns (UpdateSessionResponse);
+  
+  // 查询用户会话列表
+  rpc QueryUserSessions(QueryUserSessionsRequest) returns (QueryUserSessionsResponse);
+}
+
+// 存储消息请求
+message StoreMessageRequest {
+  string session_id = 1;
+  Message message = 2;
+  bool sync = 3;
+  flare.common.v1.RequestContext context = 4;
+  flare.common.v1.TenantContext tenant = 5;
+  map<string, string> tags = 6;
+}
+
+// 存储消息响应
+message StoreMessageResponse {
+  bool success = 1;
+  string message_id = 2;
+  string error_message = 3;
+  flare.common.v1.RpcStatus status = 4;
+}
+
+// 批量存储消息请求
+message BatchStoreMessageRequest {
+  repeated StoreMessageRequest messages = 1;
+}
+
+// 批量存储消息响应
+message BatchStoreMessageResponse {
+  int32 success_count = 1;
+  int32 fail_count = 2;
+  repeated string message_ids = 3;
+  repeated FailedMessage failures = 4;
+  flare.common.v1.RpcStatus status = 5;
+}
+
+message FailedMessage {
+  string message_id = 1;
+  flare.common.v1.ErrorCode code = 2;
+  string error_message = 3;
+}
+
+// 查询消息请求
+message QueryMessagesRequest {
+  string session_id = 1;
+  int64 start_time = 2;
+  int64 end_time = 3;
+  int32 limit = 4;
+  string cursor = 5;
+  flare.common.v1.RequestContext context = 6;
+  flare.common.v1.TenantContext tenant = 7;
+  flare.common.v1.Pagination pagination = 8;
+}
+
+// 查询消息响应
+message QueryMessagesResponse {
+  repeated Message messages = 1;
+  string next_cursor = 2;
+  bool has_more = 3;
+  flare.common.v1.Pagination pagination = 4;
+  flare.common.v1.RpcStatus status = 5;
+}
+
+// 删除消息请求
+message DeleteMessageRequest {
+  string session_id = 1;
+  repeated string message_ids = 2;
+  flare.common.v1.RequestContext context = 3;
+  flare.common.v1.TenantContext tenant = 4;
+}
+
+// 删除消息响应
+message DeleteMessageResponse {
+  bool success = 1;
+  int32 deleted_count = 2;
+  flare.common.v1.RpcStatus status = 3;
+}
+
+// ========== 消息操作相关请求/响应 ==========
+
+// 撤回消息请求
+message RecallMessageRequest {
+  string message_id = 1;
+  string operator_id = 2;  // 操作者ID（必须是发送者）
+  string reason = 3;  // 撤回原因（可选）
+  int32 recall_time_limit_seconds = 4;  // 撤回时间限制（秒），默认120秒
+  flare.common.v1.RequestContext context = 5;
+  flare.common.v1.TenantContext tenant = 6;
+}
+
+// 撤回消息响应
+message RecallMessageResponse {
+  bool success = 1;
+  string error_message = 2;
+  google.protobuf.Timestamp recalled_at = 3;
+  flare.common.v1.RpcStatus status = 4;
+}
+
+// 用户删除消息请求
+message DeleteMessageForUserRequest {
+  string message_id = 1;
+  string user_id = 2;  // 删除消息的用户ID
+  bool permanent = 3;  // 是否永久删除（true: deleted, false: hidden）
+  flare.common.v1.RequestContext context = 4;
+  flare.common.v1.TenantContext tenant = 5;
+}
+
+// 用户删除消息响应
+message DeleteMessageForUserResponse {
+  bool success = 1;
+  string error_message = 2;
+  VisibilityStatus visibility_status = 3;
+  flare.common.v1.RpcStatus status = 4;
+}
+
+// 清除会话请求
+message ClearSessionRequest {
+  string session_id = 1;
+  string user_id = 2;  // 清除会话的用户ID
+  ClearType clear_type = 3;  // 清除类型
+  string clear_before_message_id = 4;  // 清除此消息之前的所有消息
+  google.protobuf.Timestamp clear_before_time = 5;  // 清除此时间之前的所有消息
+  flare.common.v1.RequestContext context = 6;
+  flare.common.v1.TenantContext tenant = 7;
+}
+
+// 清除类型
+enum ClearType {
+  CLEAR_ALL = 0;  // 清除所有消息
+  CLEAR_BEFORE_MESSAGE = 1;  // 清除某条消息之前的所有消息
+  CLEAR_BEFORE_TIME = 2;  // 清除某时间之前的所有消息
+}
+
+// 清除会话响应
+message ClearSessionResponse {
+  bool success = 1;
+  string error_message = 2;
+  int32 cleared_count = 3;  // 清除的消息数量
+  google.protobuf.Timestamp cleared_at = 4;
+  flare.common.v1.RpcStatus status = 5;
+}
+
+// 标记消息已读请求（用于阅后即焚）
+message MarkMessageReadRequest {
+  string message_id = 1;
+  string user_id = 2;  // 阅读消息的用户ID
+  flare.common.v1.RequestContext context = 3;
+  flare.common.v1.TenantContext tenant = 4;
+}
+
+// 标记消息已读响应
+message MarkMessageReadResponse {
+  bool success = 1;
+  string error_message = 2;
+  google.protobuf.Timestamp read_at = 3;
+  google.protobuf.Timestamp burned_at = 4;  // 预计销毁时间
+  flare.common.v1.RpcStatus status = 5;
+}
+
+// ========== 会话管理相关请求/响应 ==========
+
+// 创建会话请求
+message CreateSessionRequest {
+  string session_id = 1;  // 可选，不提供则自动生成
+  string session_type = 2;  // single/group/cs/ai
+  string business_type = 3;  // im/cs/ai
+  repeated string participants = 4;  // 参与者ID列表
+  map<string, string> metadata = 5;  // 扩展元数据
+  flare.common.v1.RequestContext context = 6;
+  flare.common.v1.TenantContext tenant = 7;
+}
+
+// 创建会话响应
+message CreateSessionResponse {
+  bool success = 1;
+  string session_id = 2;
+  string error_message = 3;
+  SessionInfo session = 4;
+  flare.common.v1.RpcStatus status = 5;
+}
+
+// 获取会话请求
+message GetSessionRequest {
+  string session_id = 1;
+  flare.common.v1.RequestContext context = 2;
+  flare.common.v1.TenantContext tenant = 3;
+}
+
+// 获取会话响应
+message GetSessionResponse {
+  bool success = 1;
+  SessionInfo session = 2;
+  string error_message = 3;
+  flare.common.v1.RpcStatus status = 4;
+}
+
+// 更新会话请求
+message UpdateSessionRequest {
+  string session_id = 1;
+  string last_message_id = 2;  // 最后一条消息ID
+  google.protobuf.Timestamp last_message_time = 3;  // 最后一条消息时间
+  map<string, int32> unread_count = 4;  // 未读数 {user_id: count}
+  string status = 5;  // active/closed
+  map<string, string> metadata = 6;  // 扩展元数据
+  flare.common.v1.RequestContext context = 7;
+  flare.common.v1.TenantContext tenant = 8;
+}
+
+// 更新会话响应
+message UpdateSessionResponse {
+  bool success = 1;
+  string error_message = 2;
+  SessionInfo session = 3;
+  flare.common.v1.RpcStatus status = 4;
+}
+
+// 查询用户会话列表请求
+message QueryUserSessionsRequest {
+  string user_id = 1;
+  string business_type = 2;  // 可选，过滤业务类型
+  int32 limit = 3;
+  string cursor = 4;  // 分页游标
+  flare.common.v1.RequestContext context = 5;
+  flare.common.v1.TenantContext tenant = 6;
+  flare.common.v1.Pagination pagination = 7;
+}
+
+// 查询用户会话列表响应
+message QueryUserSessionsResponse {
+  repeated SessionInfo sessions = 1;
+  string next_cursor = 2;
+  bool has_more = 3;
+  flare.common.v1.Pagination pagination = 4;
+  flare.common.v1.RpcStatus status = 5;
+}
+
+// 会话信息
+message SessionInfo {
+  string session_id = 1;
+  string session_type = 2;  // single/group/cs/ai
+  string business_type = 3;  // im/cs/ai
+  repeated string participants = 4;  // 参与者ID列表
+  google.protobuf.Timestamp created_at = 5;
+  google.protobuf.Timestamp updated_at = 6;
+  string last_message_id = 7;
+  google.protobuf.Timestamp last_message_time = 8;
+  map<string, int32> unread_count = 9;  // 未读数 {user_id: count}
+  string status = 10;  // active/closed
+  map<string, string> metadata = 11;  // 扩展元数据
+  flare.common.v1.TenantContext tenant = 12;
+}
+
+// 消息
+message Message {
+  string id = 1;
+  string session_id = 2;
+  string sender_id = 3;
+  string sender_type = 4;  // user/agent/ai_bot
+  repeated string receiver_ids = 5;
+  string receiver_id = 6;  // 单聊接收者ID
+  bytes content = 7;
+  string content_type = 8;  // text/image/video/file
+  google.protobuf.Timestamp timestamp = 9;
+  string status = 10;  // sent/delivered/read
+  map<string, string> extra = 11;
+  
+  // 业务类型
+  string business_type = 12;  // im/cs/ai
+  string session_type = 13;  // single/group/cs/ai
+  
+  // ========== 消息操作相关字段 ==========
+  
+  // 撤回相关
+  bool is_recalled = 14;
+  google.protobuf.Timestamp recalled_at = 15;
+  string recall_reason = 16;
+  
+  // 阅后即焚相关
+  bool is_burn_after_read = 17;
+  int32 burn_after_seconds = 18;  // 阅读后销毁时间（秒）
+  repeated MessageReadRecord read_by = 19;  // 已阅读用户列表
+  
+  // 消息可见性控制（用户级别）
+  map<string, VisibilityStatus> visibility = 20;  // key: user_id, value: 可见性状态
+  
+  // 操作历史记录
+  repeated MessageOperation operations = 21;
+  flare.common.v1.TenantContext tenant = 22;
+  repeated flare.common.v1.MediaAttachment attachments = 23;
+  flare.common.v1.AuditContext audit = 24;
+  flare.communication_core.v1.MessageType message_type = 25;
+  flare.communication_core.v1.MessageContent structured_content = 26;
+}
+
+// 消息阅读记录
+message MessageReadRecord {
+  string user_id = 1;
+  google.protobuf.Timestamp read_at = 2;
+  google.protobuf.Timestamp burned_at = 3;  // 销毁时间
+}
+
+// 可见性状态
+enum VisibilityStatus {
+  VISIBLE = 0;  // 可见（默认）
+  HIDDEN = 1;   // 隐藏（用户删除，但可恢复）
+  DELETED = 2;  // 已删除（用户彻底删除）
+}
+
+// 消息操作记录
+message MessageOperation {
+  string operation_type = 1;  // recall/delete/hide/clear
+  string operator_id = 2;  // 操作者ID
+  google.protobuf.Timestamp operated_at = 3;
+  string target_user_id = 4;  // 目标用户ID（如果是用户删除）
+  map<string, string> metadata = 5;  // 操作元数据
+}
+

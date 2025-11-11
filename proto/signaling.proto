@@ -1,0 +1,113 @@
+syntax = "proto3";
+
+package flare.signaling.v1;
+
+import "google/protobuf/timestamp.proto";
+import "common/errors.proto";
+import "common/metadata.proto";
+
+// 信令服务
+service SignalingService {
+  // 用户登录
+  rpc Login(LoginRequest) returns (LoginResponse);
+  
+  // 用户登出
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+  
+  // 心跳
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  
+  // 获取在线状态
+  rpc GetOnlineStatus(GetOnlineStatusRequest) returns (GetOnlineStatusResponse);
+  
+  // 路由消息
+  rpc RouteMessage(RouteMessageRequest) returns (RouteMessageResponse);
+}
+
+// 登录请求
+message LoginRequest {
+  string user_id = 1;
+  string token = 2;
+  string device_id = 3;
+  string server_id = 4;
+  map<string, string> metadata = 5;
+  flare.common.v1.RequestContext context = 6;
+  flare.common.v1.TenantContext tenant = 7;
+}
+
+// 登录响应
+message LoginResponse {
+  bool success = 1;
+  string session_id = 2;
+  string route_server = 3;
+  string error_message = 4;
+  flare.common.v1.RpcStatus status = 5;
+}
+
+// 登出请求
+message LogoutRequest {
+  string user_id = 1;
+  string session_id = 2;
+  flare.common.v1.RequestContext context = 3;
+  flare.common.v1.TenantContext tenant = 4;
+}
+
+// 登出响应
+message LogoutResponse {
+  bool success = 1;
+  flare.common.v1.RpcStatus status = 2;
+}
+
+// 心跳请求
+message HeartbeatRequest {
+  string user_id = 1;
+  string session_id = 2;
+  flare.common.v1.RequestContext context = 3;
+  flare.common.v1.TenantContext tenant = 4;
+}
+
+// 心跳响应
+message HeartbeatResponse {
+  bool success = 1;
+  flare.common.v1.RpcStatus status = 2;
+}
+
+// 在线状态查询请求
+message GetOnlineStatusRequest {
+  repeated string user_ids = 1;
+  flare.common.v1.RequestContext context = 2;
+  flare.common.v1.TenantContext tenant = 3;
+}
+
+// 在线状态查询响应
+message GetOnlineStatusResponse {
+  map<string, OnlineStatus> statuses = 1;
+  flare.common.v1.RpcStatus status = 2;
+}
+
+// 在线状态
+message OnlineStatus {
+  bool online = 1;
+  string server_id = 2;
+  string cluster_id = 3;
+  google.protobuf.Timestamp last_seen = 4;
+  flare.common.v1.TenantContext tenant = 5;
+}
+
+// 路由消息请求
+message RouteMessageRequest {
+  string user_id = 1;
+  string svid = 2;  // Service ID
+  bytes payload = 3;
+  flare.common.v1.RequestContext context = 4;
+  flare.common.v1.TenantContext tenant = 5;
+}
+
+// 路由消息响应
+message RouteMessageResponse {
+  bool success = 1;
+  bytes response = 2;
+  string error_message = 3;
+  flare.common.v1.RpcStatus status = 4;
+}
+
