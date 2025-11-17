@@ -2,25 +2,119 @@ syntax = "proto3";
 
 package flare.common.v1;
 
-// 统一错误码定义，覆盖通信核心层常见错误类型
+// -----------------------------------------------------------------------------
+// 统一错误模型
+// -----------------------------------------------------------------------------
+// 设计目标：覆盖IM业务常见错误，支持扩展信息和重试策略，统一API/WebSocket/流式RPC使用
+
+// 业务错误编码（所有gRPC接口的统一错误返回）
 enum ErrorCode {
   ERROR_CODE_UNSPECIFIED = 0;
-  ERROR_CODE_OK = 1;
-  ERROR_CODE_INVALID_ARGUMENT = 2;
-  ERROR_CODE_UNAUTHENTICATED = 3;
-  ERROR_CODE_PERMISSION_DENIED = 4;
-  ERROR_CODE_NOT_FOUND = 5;
-  ERROR_CODE_CONFLICT = 6;
-  ERROR_CODE_RATE_LIMITED = 7;
-  ERROR_CODE_INTERNAL = 8;
-  ERROR_CODE_UNAVAILABLE = 9;
-  ERROR_CODE_TIMEOUT = 10;
+
+  // 成功 / 常规
+  ERROR_CODE_OK = 1;                    // 操作成功
+  ERROR_CODE_CANCELLED = 2;             // 操作被取消
+
+  // 参数 / 协议
+  ERROR_CODE_INVALID_ARGUMENT = 10;     // 参数错误
+  ERROR_CODE_FAILED_PRECONDITION = 11;  // 前置条件不满足
+  ERROR_CODE_OUT_OF_RANGE = 12;         // 参数值超出范围
+  ERROR_CODE_UNSUPPORTED_OPERATION = 13; // 不支持的操作
+
+  // 鉴权 / 权限
+  ERROR_CODE_UNAUTHENTICATED = 20;      // 未认证
+  ERROR_CODE_PERMISSION_DENIED = 21;    // 权限不足
+  ERROR_CODE_TOKEN_EXPIRED = 22;        // Token已过期
+  ERROR_CODE_TOKEN_REVOKED = 23;        // Token已被撤销
+
+  // 资源相关
+  ERROR_CODE_NOT_FOUND = 30;            // 资源不存在
+  ERROR_CODE_ALREADY_EXISTS = 31;       // 资源已存在
+  ERROR_CODE_CONFLICT = 32;             // 资源冲突
+  ERROR_CODE_RESOURCE_EXHAUSTED = 33;   // 资源耗尽
+  ERROR_CODE_QUOTA_EXCEEDED = 34;       // 配额超限
+
+  // 业务状态
+  ERROR_CODE_RATE_LIMITED = 40;         // 限流
+  ERROR_CODE_SLOW_DOWN = 41;            // 需要降速
+  ERROR_CODE_IN_PROGRESS = 42;          // 操作进行中
+  ERROR_CODE_NEEDS_RETRY = 43;          // 需要重试
+
+  // 系统 / 网络
+  ERROR_CODE_TIMEOUT = 50;              // 超时
+  ERROR_CODE_UNAVAILABLE = 51;          // 服务不可用
+  ERROR_CODE_BACKOFF_REQUIRED = 52;     // 需要退避重试
+
+  // 非预期 / 内部
+  ERROR_CODE_INTERNAL = 60;              // 内部错误
+  ERROR_CODE_DATA_LOSS = 61;            // 数据丢失
+  ERROR_CODE_NOT_IMPLEMENTED = 62;      // 未实现
 }
 
-// 统一 RPC 状态，附带可扩展详情
+// 重试策略建议（用于客户端错误处理）
+message RetryAdvice {
+  bool retryable = 1;           // 是否可重试（true=可重试，false=不应重试）
+  int64 retry_after_ms = 2;     // 建议延迟时间（毫秒，0表示立即重试）
+  string reason = 3;            // 限制类型（rate_limit/quota/timeout等）
+}
+
+// 字段级错误详情（用于参数校验失败）
+message FieldViolation {
+  string field = 1;             // 字段路径（点号分隔，如message.content.text）
+  string description = 2;       // 错误描述
+}
+
+// 配额/限流错误详情
+message QuotaFailure {
+  string limit_name = 1;        // 限制名称（message_qps/message_daily/storage_gb等）
+  string limit_unit = 2;         // 限制单位（qps/daily/gb/count等）
+  int64 limit_value = 3;         // 限制值
+}
+
+// 资源冲突信息
+message ConflictInfo {
+  string resource_type = 1;     // 资源类型（device/session/message等）
+  string resource_id = 2;        // 资源ID
+  string owning_actor = 3;      // 当前拥有者
+  string reason = 4;            // 冲突原因
+}
+
+// 灰度/版本兼容提示
+message CompatibilityHint {
+  string min_version = 1;       // 最低支持版本（语义化版本号）
+  string recommended_version = 2; // 推荐版本
+  string track = 3;             // 版本轨道（beta/stable/alpha）
+}
+
+// 通用错误详情集合（提供结构化的错误信息）
+message ErrorDetail {
+  string domain = 1;                    // 错误域（message/session/auth等）
+  string reason = 2;                    // 错误原因（session_not_found/quota_exceeded等）
+  string message = 3;                   // 错误消息（人类可读）
+  map<string, string> metadata = 4;     // 扩展元数据
+
+  oneof detail {
+    FieldViolation field_violation = 10;  // 字段校验错误（INVALID_ARGUMENT时使用）
+    QuotaFailure quota_failure = 11;      // 配额/限流错误（QUOTA_EXCEEDED/RATE_LIMITED时使用）
+    ConflictInfo conflict_info = 12;      // 资源冲突信息（CONFLICT时使用）
+    RetryAdvice retry = 13;               // 重试建议（可重试时使用）
+    CompatibilityHint compatibility = 14;  // 版本兼容提示（UNSUPPORTED_OPERATION时使用）
+  }
+}
+
+// 错误上下文（用于问题定位和调试）
+message ErrorContext {
+  string service = 1;                   // 服务名称（message-orchestrator/storage-writer等）
+  string instance = 2;                  // 实例ID
+  string region = 3;                    // 区域（cn-beijing/us-east-1等）
+  string zone = 4;                      // 可用区（cn-beijing-1/us-east-1a等）
+  map<string, string> attributes = 5;   // 扩展属性（trace_id/request_id/version等）
+}
+
+// 统一RPC状态结构（所有响应消息的必需字段）
 message RpcStatus {
-  ErrorCode code = 1;
-  string message = 2;
-  map<string, string> details = 3;
+  ErrorCode code = 1;                   // 错误码（ERROR_CODE_OK表示成功）
+  string message = 2;                    // 错误消息（人类可读）
+  repeated ErrorDetail details = 3;      // 错误详情列表
+  ErrorContext context = 4;             // 错误上下文
 }
-

@@ -24,7 +24,7 @@ flare-proto = { path = "../flare-proto" }
 ### 使用
 
 ```rust
-use flare_proto::communication_core::*;
+use flare_proto::access_gateway::*;
 use flare_proto::signaling::*;
 use flare_proto::push::*;
 use flare_proto::storage::*;
@@ -35,13 +35,12 @@ use flare_proto::media::*;
 
 ## 📦 包含的协议
 
-### 1. Communication Core (`communication_core`)
+### 1. Access Gateway (`access_gateway`)
 
-通信核心层统一服务接口，包括：
-- 信令相关：Login, GetOnlineStatus, RouteMessage
-- 推送相关：PushMessage, PushNotification
-- 存储相关：StoreMessage, QueryMessages
-- 媒体相关：UploadFile, GetFileUrl, ProcessImage, ProcessVideo
+业务系统推送消息给客户端的接口，包括：
+- PushMessage：推送消息给客户端
+- BatchPushMessage：批量推送消息
+- QueryUserConnections：查询用户连接状态
 
 ### 2. Signaling (`signaling`)
 

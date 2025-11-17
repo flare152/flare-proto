@@ -1,0 +1,354 @@
+syntax = "proto3";
+
+package flare.session.v1;
+
+import "google/protobuf/timestamp.proto";
+import "common/errors.proto";
+import "common/metadata.proto";
+import "storage.proto";
+
+// -----------------------------------------------------------------------------
+// 会话同步与管理服务
+// -----------------------------------------------------------------------------
+// 职责：会话创建、同步、管理等核心能力
+// 依赖：Storage Service、Redis（会话状态缓存）
+//
+
+// -----------------------------------------------------------------------------
+// 枚举定义
+// -----------------------------------------------------------------------------
+
+enum SortOrder {
+  SORT_ORDER_UNSPECIFIED = 0;
+  SORT_ORDER_UPDATED_DESC = 1;   // 按更新时间降序
+  SORT_ORDER_UPDATED_ASC = 2;    // 按更新时间升序
+  SORT_ORDER_UNREAD_DESC = 3;    // 按未读数降序
+}
+
+enum SessionVisibility {
+  SESSION_VISIBILITY_UNSPECIFIED = 0;
+  SESSION_VISIBILITY_PRIVATE = 1;   // 私有（仅参与者可见）
+  SESSION_VISIBILITY_TENANT = 2;     // 租户内可见
+  SESSION_VISIBILITY_PUBLIC = 3;    // 公开（所有用户可见）
+}
+
+enum SessionLifecycleState {
+  SESSION_LIFECYCLE_STATE_UNSPECIFIED = 0;
+  SESSION_LIFECYCLE_ACTIVE = 1;      // 活跃
+  SESSION_LIFECYCLE_SUSPENDED = 2;   // 暂停
+  SESSION_LIFECYCLE_ARCHIVED = 3;    // 归档（软删除）
+  SESSION_LIFECYCLE_DELETED = 4;     // 已删除
+}
+
+enum ConflictResolution {
+  CONFLICT_RESOLUTION_UNSPECIFIED = 0;
+  CONFLICT_RESOLUTION_EXCLUSIVE = 1;           // 互斥（新设备踢出旧设备）
+  CONFLICT_RESOLUTION_PLATFORM_EXCLUSIVE = 2;   // 平台互斥（同平台互斥）
+  CONFLICT_RESOLUTION_COEXIST = 3;             // 共存（多设备同时登录）
+  CONFLICT_RESOLUTION_FORCE_LOGOUT = 4;        // 强制登出（新设备登录时强制登出所有旧设备）
+}
+
+enum DeviceState {
+  DEVICE_STATE_UNSPECIFIED = 0;
+  DEVICE_STATE_ONLINE = 1;    // 在线
+  DEVICE_STATE_OFFLINE = 2;    // 离线
+  DEVICE_STATE_CONFLICT = 3;   // 冲突（被其他设备踢出）
+}
+
+// -----------------------------------------------------------------------------
+// 数据模型
+// -----------------------------------------------------------------------------
+
+// 会话摘要（用于会话列表展示）
+message SessionSummary {
+  string session_id = 1;                                    // 会话ID
+  string session_type = 2;                                  // 会话类型（single/group/channel）
+  string business_type = 3;                                // 业务类型
+  string last_message_id = 4;                             // 最后一条消息ID
+  google.protobuf.Timestamp last_message_time = 5;        // 最后一条消息时间（RFC3339格式）
+  string last_sender_id = 6;                               // 最后发送者ID
+  flare.storage.v1.MessageType last_message_type = 7;     // 最后消息类型
+  string last_content_type = 8;                            // 最后内容类型
+  int32 unread_count = 9;                                  // 未读数
+  map<string, string> metadata = 10;                       // 元数据
+  int64 server_cursor_ts = 11;                             // 服务器游标时间戳（毫秒）
+  string display_name = 12;                                // 显示名称
+}
+
+// 会话对象（完整的会话信息）
+message Session {
+  string session_id = 1;                                    // 会话ID（全局唯一）
+  string session_type = 2;                                 // 会话类型（single/group/channel）
+  string business_type = 3;                                // 业务类型
+  map<string, string> attributes = 4;                      // 会话属性
+  repeated SessionParticipant participants = 5;            // 参与者列表
+  SessionVisibility visibility = 6;                        // 可见性
+  SessionLifecycleState lifecycle_state = 7;              // 生命周期状态
+  google.protobuf.Timestamp created_at = 8;                // 创建时间（RFC3339格式）
+  google.protobuf.Timestamp updated_at = 9;               // 更新时间（RFC3339格式）
+  SessionPolicy policy = 10;                               // 会话策略
+}
+
+// 会话参与者
+message SessionParticipant {
+  string user_id = 1;                      // 用户ID（必需）
+  repeated string roles = 2;               // 角色列表（admin/member/viewer等）
+  bool muted = 3;                          // 是否静音
+  bool pinned = 4;                         // 是否置顶
+  map<string, string> attributes = 5;       // 扩展属性
+}
+
+// 会话策略
+message SessionPolicy {
+  ConflictResolution conflict_resolution = 1;  // 冲突解决策略
+  int32 max_devices = 2;                       // 最大设备数（0表示无限制）
+  bool allow_anonymous = 3;                   // 是否允许匿名
+  bool allow_history_sync = 4;                // 是否允许历史同步
+  map<string, string> metadata = 5;            // 元数据
+}
+
+// 设备在线状态
+message DevicePresence {
+  string device_id = 1;                                    // 设备ID
+  string device_platform = 2;                             // 设备平台（ios/android/web/pc）
+  DeviceState state = 3;                                  // 设备状态
+  google.protobuf.Timestamp last_seen_at = 4;            // 最后活跃时间（RFC3339格式）
+}
+
+// 确认游标
+message AckCursor {
+  string session_id = 1;
+  int64 message_ts = 2;
+}
+
+// 参与者角色更新
+message ParticipantRoleUpdate {
+  string user_id = 1;
+  repeated string roles = 2;
+}
+
+// -----------------------------------------------------------------------------
+// 会话引导 / 首屏相关消息
+// -----------------------------------------------------------------------------
+
+message SessionBootstrapRequest {
+  string user_id = 1;                                    // 用户ID（必需）
+  flare.common.v1.TenantContext tenant = 2;
+  map<string, int64> client_cursor_map = 3;              // 客户端游标映射（session_id -> last_synced_ts毫秒）
+  bool include_recent_messages = 4;                      // 是否包含最近消息
+  int32 recent_message_limit = 5;                        // 最近消息数量限制（默认10）
+  string device_id = 6;
+  string device_platform = 7;                           // 设备平台（ios/android/web/pc等）
+}
+
+message SessionBootstrapResponse {
+  repeated SessionSummary sessions = 1;
+  repeated flare.storage.v1.Message recent_messages = 2;
+  repeated DevicePresence devices = 3;
+  map<string, int64> server_cursor_map = 4;
+  SessionPolicy policy = 5;
+  flare.common.v1.RpcStatus status = 6;
+}
+
+// -----------------------------------------------------------------------------
+// 会话列表 / 同步相关消息
+// -----------------------------------------------------------------------------
+
+message ListSessionsRequest {
+  string user_id = 1;
+  flare.common.v1.TenantContext tenant = 2;
+  string cursor = 3;
+  int32 limit = 4;
+  SortOrder order = 5;
+}
+
+message ListSessionsResponse {
+  repeated SessionSummary sessions = 1;
+  string next_cursor = 2;
+  bool has_more = 3;
+  flare.common.v1.RpcStatus status = 4;
+}
+
+message SyncMessagesRequest {
+  string user_id = 1;                                    // 用户ID（必需）
+  string session_id = 2;                                 // 会话ID（必需）
+  flare.common.v1.TenantContext tenant = 3;
+  int64 since_ts = 4;                                    // 起始时间戳（包含性，毫秒）
+  string cursor = 5;                                      // 游标（用于分页）
+  int32 limit = 6;                                       // 返回数量限制（默认100，最大1000）
+  bool include_ack = 7;                                  // 是否返回服务器游标
+}
+
+message SyncMessagesResponse {
+  repeated flare.storage.v1.Message messages = 1;
+  string next_cursor = 2;
+  int64 server_cursor_ts = 3;
+  flare.common.v1.RpcStatus status = 4;
+}
+
+message UpdateCursorRequest {
+  string user_id = 1;
+  string session_id = 2;
+  int64 message_ts = 3;
+  flare.common.v1.TenantContext tenant = 4;
+  string device_id = 5;
+}
+
+message UpdateCursorResponse {
+  flare.common.v1.RpcStatus status = 1;
+}
+
+message UpdatePresenceRequest {
+  string user_id = 1;
+  string device_id = 2;
+  string device_platform = 3;
+  DeviceState state = 4;
+  flare.common.v1.TenantContext tenant = 5;
+  ConflictResolution resolution = 6;
+  bool notify_conflict = 7;
+  string conflict_reason = 8;
+}
+
+message UpdatePresenceResponse {
+  flare.common.v1.RpcStatus status = 1;
+}
+
+message ForceSessionSyncRequest {
+  flare.common.v1.RequestContext context = 1;
+  flare.common.v1.TenantContext tenant = 2;
+  string user_id = 3;
+  repeated string session_ids = 4;
+  string reason = 5;
+}
+
+message ForceSessionSyncResponse {
+  flare.common.v1.RpcStatus status = 1;
+}
+
+// -----------------------------------------------------------------------------
+// 会话管理相关消息
+// -----------------------------------------------------------------------------
+
+message CreateSessionRequest {
+  flare.common.v1.RequestContext context = 1;
+  flare.common.v1.TenantContext tenant = 2;
+  string session_type = 3;
+  string business_type = 4;
+  repeated SessionParticipant participants = 5;
+  map<string, string> attributes = 6;
+  SessionVisibility visibility = 7;
+}
+
+message CreateSessionResponse {
+  Session session = 1;
+  flare.common.v1.RpcStatus status = 2;
+}
+
+message UpdateSessionRequest {
+  flare.common.v1.RequestContext context = 1;
+  flare.common.v1.TenantContext tenant = 2;
+  string session_id = 3;
+  string display_name = 4;
+  map<string, string> attributes = 5;
+  SessionVisibility visibility = 6;
+  SessionLifecycleState lifecycle_state = 7;
+}
+
+message UpdateSessionResponse {
+  Session session = 1;
+  flare.common.v1.RpcStatus status = 2;
+}
+
+message DeleteSessionRequest {
+  flare.common.v1.RequestContext context = 1;
+  flare.common.v1.TenantContext tenant = 2;
+  string session_id = 3;
+  bool hard_delete = 4;
+}
+
+message DeleteSessionResponse {
+  flare.common.v1.RpcStatus status = 1;
+}
+
+message ManageParticipantsRequest {
+  flare.common.v1.RequestContext context = 1;
+  flare.common.v1.TenantContext tenant = 2;
+  string session_id = 3;
+  repeated SessionParticipant to_add = 4;
+  repeated string to_remove = 5;
+  repeated ParticipantRoleUpdate role_updates = 6;
+}
+
+message ManageParticipantsResponse {
+  repeated SessionParticipant participants = 1;
+  flare.common.v1.RpcStatus status = 2;
+}
+
+message BatchAcknowledgeRequest {
+  flare.common.v1.RequestContext context = 1;
+  flare.common.v1.TenantContext tenant = 2;
+  string user_id = 3;
+  repeated AckCursor cursors = 4;
+}
+
+message BatchAcknowledgeResponse {
+  flare.common.v1.RpcStatus status = 1;
+}
+
+message SearchSessionsRequest {
+  flare.common.v1.RequestContext context = 1;
+  flare.common.v1.TenantContext tenant = 2;
+  repeated flare.common.v1.FilterExpression filters = 3;
+  repeated flare.common.v1.SortExpression sort = 4;
+  flare.common.v1.Pagination pagination = 5;
+}
+
+message SearchSessionsResponse {
+  repeated SessionSummary sessions = 1;
+  flare.common.v1.Pagination pagination = 2;
+  flare.common.v1.RpcStatus status = 3;
+}
+
+// -----------------------------------------------------------------------------
+// 服务定义
+// -----------------------------------------------------------------------------
+
+service SessionService {
+  // 会话引导（首次登录或重新连接，获取会话摘要，支持增量同步）
+  rpc SessionBootstrap(SessionBootstrapRequest) returns (SessionBootstrapResponse);
+  
+  // 列出会话（分页获取，支持按更新时间或未读数排序）
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+  
+  // 同步消息（从指定时间点或游标开始同步，支持游标分页）
+  rpc SyncMessages(SyncMessagesRequest) returns (SyncMessagesResponse);
+  
+  // 更新游标（更新读取位置，影响未读数统计，每个设备独立游标）
+  rpc UpdateCursor(UpdateCursorRequest) returns (UpdateCursorResponse);
+  
+  // 更新设备在线状态（支持设备冲突处理）
+  rpc UpdatePresence(UpdatePresenceRequest) returns (UpdatePresenceResponse);
+  
+  // 强制会话同步（服务端主动触发，用于数据修复或强制刷新）
+  rpc ForceSessionSync(ForceSessionSyncRequest) returns (ForceSessionSyncResponse);
+
+  // --- 管理能力 ---
+  
+  // 创建会话（单聊、群聊等，设置参与者、可见性等属性）
+  rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
+  
+  // 更新会话（显示名称、属性、可见性、生命周期状态等）
+  rpc UpdateSession(UpdateSessionRequest) returns (UpdateSessionResponse);
+  
+  // 删除会话（hard_delete=true物理删除，false逻辑删除）
+  rpc DeleteSession(DeleteSessionRequest) returns (DeleteSessionResponse);
+  
+  // 管理参与者（批量添加、移除、更新角色）
+  rpc ManageParticipants(ManageParticipantsRequest) returns (ManageParticipantsResponse);
+  
+  // 批量确认（批量更新多个会话的读取游标）
+  rpc BatchAcknowledge(BatchAcknowledgeRequest) returns (BatchAcknowledgeResponse);
+  
+  // 搜索会话（支持复杂过滤和排序）
+  rpc SearchSessions(SearchSessionsRequest) returns (SearchSessionsResponse);
+}

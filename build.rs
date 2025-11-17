@@ -6,12 +6,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &[
                 "proto/common/errors.proto",
                 "proto/common/metadata.proto",
-                "proto/communication_core.proto",
                 "proto/signaling.proto",
                 "proto/push.proto",
                 "proto/storage.proto",
                 "proto/media.proto",
                 "proto/hooks.proto",
+                "proto/session.proto",
+                "proto/message.proto",
+                "proto/access_gateway.proto",
             ],
             &["proto"],
         )?;

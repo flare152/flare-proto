@@ -1,0 +1,462 @@
+syntax = "proto3";
+
+package flare.message.v1;
+
+import "google/protobuf/timestamp.proto";
+import "common/errors.proto";
+import "common/metadata.proto";
+import "storage.proto";
+
+// -----------------------------------------------------------------------------
+// 消息编排服务
+// -----------------------------------------------------------------------------
+// 职责：消息发送、查询、撤回等核心能力，由 Message Orchestrator 实现
+// 依赖：Storage Service、Hook Engine
+// 设计：所有接口必须携带RequestContext和TenantContext，所有响应包含RpcStatus，支持同步/异步模式，所有操作经过Hook校验
+// 实现：由 flare-message-orchestrator 实现，Gateway 只做代理转发
+//
+
+// -----------------------------------------------------------------------------
+// 消息发送相关消息
+// -----------------------------------------------------------------------------
+
+// 发送消息请求
+message SendMessageRequest {
+  // 会话ID，标识消息发送到哪个会话
+  // 格式：{session_type}:{session_id}，如 "single:user-10001-user-10002"
+  // 必需字段，不能为空
+  string session_id = 1;
+  
+  // 消息内容，包含消息类型、内容、元数据等
+  // 必需字段，不能为空
+  // 消息大小限制：单条消息最大64KB
+  flare.storage.v1.Message message = 2;
+  
+  // 是否同步等待持久化
+  // true: 等待消息完全持久化后返回，延迟较高但保证持久化成功
+  // false: 立即返回，延迟较低但无法保证持久化成功（默认）
+  // 建议：非关键路径使用false，关键路径使用true
+  bool sync = 3;
+  
+  // 请求上下文，包含请求追踪、用户信息、设备信息
+  // 必需字段，不能为空
+  flare.common.v1.RequestContext context = 4;
+  
+  // 租户上下文，包含租户信息，用于租户隔离
+  // 必需字段，不能为空
+  flare.common.v1.TenantContext tenant = 5;
+}
+
+// 发送消息响应
+message SendMessageResponse {
+  // 是否发送成功
+  // true: 发送成功（同步模式下表示已持久化，异步模式下表示已入队）
+  // false: 发送失败，查看status获取错误信息
+  bool success = 1;
+  
+  // 消息ID，全局唯一标识符
+  // 格式：{tenant_id}:{timestamp}:{random}，如 "tenant-a:1234567890:abc123"
+  // 成功时返回，用于后续查询和操作
+  string message_id = 2;
+  
+  // 发送时间，消息发送的时间戳
+  // 格式：RFC3339格式，如 "2025-01-01T00:00:00Z"
+  google.protobuf.Timestamp sent_at = 3;
+  
+  // 消息时间线信息
+  // 包含消息的持久化时间、投递时间、已读时间等
+  flare.storage.v1.MessageTimeline timeline = 4;
+  
+  // RPC状态，包含错误码和错误信息
+  // ERROR_CODE_OK表示成功，其他值表示失败
+  flare.common.v1.RpcStatus status = 5;
+}
+
+// 批量发送消息请求
+message BatchSendMessageRequest {
+  // 消息请求列表
+  // 最多支持100条消息，超过限制会返回错误
+  // 每条消息都会经过PreSend Hook校验
+  repeated SendMessageRequest messages = 1;
+}
+
+// 批量发送消息响应
+message BatchSendMessageResponse {
+  // 成功数量
+  // 成功发送的消息数量
+  int32 success_count = 1;
+  
+  // 失败数量
+  // 发送失败的消息数量
+  int32 fail_count = 2;
+  
+  // 成功的消息ID列表
+  // 按请求顺序返回成功的消息ID
+  repeated string message_ids = 3;
+  
+  // 失败的消息详情列表
+  // 包含失败的消息ID、错误码和错误信息
+  repeated FailedMessage failures = 4;
+  
+  // RPC状态，包含错误码和错误信息
+  // 部分成功时，status.code仍为ERROR_CODE_OK，但failures包含失败详情
+  flare.common.v1.RpcStatus status = 5;
+}
+
+// 失败的消息详情
+message FailedMessage {
+  // 消息ID
+  // 失败的消息ID（如果消息ID已生成）
+  string message_id = 1;
+  
+  // 错误码
+  // 失败的错误码，如ERROR_CODE_PERMISSION_DENIED、ERROR_CODE_QUOTA_EXCEEDED
+  flare.common.v1.ErrorCode code = 2;
+  
+  // 错误消息
+  // 人类可读的错误描述
+  string error_message = 3;
+}
+
+// 发送系统消息请求
+message SendSystemMessageRequest {
+  // 会话ID，标识消息发送到哪个会话
+  // 格式：{session_type}:{session_id}
+  // 必需字段，不能为空
+  string session_id = 1;
+  
+  // 消息内容，包含消息类型、内容、元数据等
+  // 必需字段，不能为空
+  flare.storage.v1.Message message = 2;
+  
+  // 系统消息类型
+  // 标识系统消息的类型，如 "group_dissolve"（群解散）、"member_quit"（成员退出）
+  // 必需字段，不能为空
+  // 用于业务系统识别和处理不同类型的系统消息
+  string system_message_type = 3;
+  
+  // 请求上下文，包含请求追踪、用户信息、设备信息
+  // 必需字段，不能为空
+  flare.common.v1.RequestContext context = 4;
+  
+  // 租户上下文，包含租户信息，用于租户隔离
+  // 必需字段，不能为空
+  flare.common.v1.TenantContext tenant = 5;
+}
+
+// 发送系统消息响应
+message SendSystemMessageResponse {
+  // 是否发送成功
+  bool success = 1;
+  
+  // 消息ID，全局唯一标识符
+  // 成功时返回
+  string message_id = 2;
+  
+  // RPC状态，包含错误码和错误信息
+  flare.common.v1.RpcStatus status = 3;
+}
+
+// -----------------------------------------------------------------------------
+// 消息查询相关消息
+// -----------------------------------------------------------------------------
+
+// 查询消息请求
+message QueryMessagesRequest {
+  // 会话ID，标识要查询的会话
+  // 格式：{session_type}:{session_id}
+  // 必需字段，不能为空
+  string session_id = 1;
+  
+  // 起始时间（毫秒时间戳）
+  // 查询范围的起始时间（包含），Unix时间戳（毫秒）
+  // 可选字段，不提供时从最早的消息开始查询
+  int64 start_time = 2;
+  
+  // 结束时间（毫秒时间戳）
+  // 查询范围的结束时间（包含），Unix时间戳（毫秒）
+  // 可选字段，不提供时查询到最新的消息
+  int64 end_time = 3;
+  
+  // 返回数量限制
+  // 本次查询返回的最大消息数
+  // 范围：1-1000，默认值：50，建议值：20-100
+  int32 limit = 4;
+  
+  // 游标
+  // 用于分页的游标，首次查询为空，后续查询使用上次返回的next_cursor
+  // 格式：服务端生成的游标字符串，客户端不应解析其内容
+  string cursor = 5;
+  
+  // 请求上下文，包含请求追踪、用户信息、设备信息
+  // 必需字段，不能为空
+  flare.common.v1.RequestContext context = 6;
+  
+  // 租户上下文，包含租户信息，用于租户隔离
+  // 必需字段，不能为空
+  flare.common.v1.TenantContext tenant = 7;
+  
+  // 分页信息
+  // 可选字段，用于分页配置
+  flare.common.v1.Pagination pagination = 8;
+}
+
+// 查询消息响应
+message QueryMessagesResponse {
+  // 消息列表
+  // 符合条件的消息列表，按时间倒序排列（最新的在前）
+  repeated flare.storage.v1.Message messages = 1;
+  
+  // 下一页游标
+  // 用于获取下一页数据的游标，空表示没有更多数据
+  string next_cursor = 2;
+  
+  // 是否还有更多数据
+  // true: 还有更多数据，可以使用next_cursor获取下一页
+  // false: 没有更多数据，已到达最后一页
+  bool has_more = 3;
+  
+  // 分页信息
+  // 包含分页的详细信息，如总记录数、上一页游标等
+  flare.common.v1.Pagination pagination = 4;
+  
+  // RPC状态，包含错误码和错误信息
+  flare.common.v1.RpcStatus status = 5;
+}
+
+// 搜索消息请求
+message SearchMessagesRequest {
+  // 请求上下文，包含请求追踪、用户信息、设备信息
+  // 必需字段，不能为空
+  flare.common.v1.RequestContext context = 1;
+  
+  // 租户上下文，包含租户信息，用于租户隔离
+  // 必需字段，不能为空
+  flare.common.v1.TenantContext tenant = 2;
+  
+  // 过滤条件列表
+  // 用于构建搜索条件，多个条件之间是AND关系
+  // 示例：按会话类型过滤、按消息类型过滤、按发送者过滤
+  repeated flare.common.v1.FilterExpression filters = 3;
+  
+  // 排序规则列表
+  // 用于指定搜索结果的排序方式，按顺序应用
+  // 示例：按时间倒序、按发送者排序
+  repeated flare.common.v1.SortExpression sort = 4;
+  
+  // 分页信息
+  // 必需字段，用于分页配置
+  flare.common.v1.Pagination pagination = 5;
+  
+  // 时间范围
+  // 可选字段，用于限制搜索的时间范围
+  flare.common.v1.TimeRange time_range = 6;
+}
+
+// 搜索消息响应
+message SearchMessagesResponse {
+  // 搜索结果消息列表
+  // 符合搜索条件的消息列表，按排序规则排列
+  repeated flare.storage.v1.Message messages = 1;
+  
+  // 分页信息
+  // 包含分页的详细信息，如总记录数、游标等
+  flare.common.v1.Pagination pagination = 2;
+  
+  // RPC状态，包含错误码和错误信息
+  flare.common.v1.RpcStatus status = 3;
+}
+
+// 获取消息请求
+message GetMessageRequest {
+  // 请求上下文，包含请求追踪、用户信息、设备信息
+  // 必需字段，不能为空
+  flare.common.v1.RequestContext context = 1;
+  
+  // 租户上下文，包含租户信息，用于租户隔离
+  // 必需字段，不能为空
+  flare.common.v1.TenantContext tenant = 2;
+  
+  // 消息ID，全局唯一标识符
+  // 格式：{tenant_id}:{timestamp}:{random}
+  // 必需字段，不能为空
+  string message_id = 3;
+}
+
+// 获取消息响应
+message GetMessageResponse {
+  // 消息详情
+  // 完整的消息信息，包含消息内容、时间线、状态等
+  flare.storage.v1.Message message = 1;
+  
+  // RPC状态，包含错误码和错误信息
+  flare.common.v1.RpcStatus status = 2;
+}
+
+// -----------------------------------------------------------------------------
+// 消息操作相关消息
+// -----------------------------------------------------------------------------
+
+// 撤回消息请求
+message RecallMessageRequest {
+  // 消息ID，要撤回的消息标识符
+  // 格式：{tenant_id}:{timestamp}:{random}
+  // 必需字段，不能为空
+  string message_id = 1;
+  
+  // 操作者ID，执行撤回操作的用户ID
+  // 必需字段，不能为空
+  // 只有消息发送者或管理员可以撤回
+  string operator_id = 2;
+  
+  // 撤回原因
+  // 可选字段，说明撤回的原因，用于审计和问题排查
+  // 示例："用户主动撤回"、"内容错误"
+  string reason = 3;
+  
+  // 撤回时间限制（秒）
+  // 消息发送后多长时间内可以撤回，超过该时间不能撤回
+  // 可选字段，不提供时使用系统默认值（如120秒）
+  // 单位：秒
+  int32 recall_time_limit_seconds = 4;
+  
+  // 请求上下文，包含请求追踪、用户信息、设备信息
+  // 必需字段，不能为空
+  flare.common.v1.RequestContext context = 5;
+  
+  // 租户上下文，包含租户信息，用于租户隔离
+  // 必需字段，不能为空
+  flare.common.v1.TenantContext tenant = 6;
+}
+
+// 撤回消息响应
+message RecallMessageResponse {
+  // 是否撤回成功
+  // true: 撤回成功，消息已被标记为已撤回
+  // false: 撤回失败，查看error_message获取失败原因
+  bool success = 1;
+  
+  // 错误消息
+  // 撤回失败时的错误描述，成功时为空
+  string error_message = 2;
+  
+  // 撤回时间
+  // 消息被撤回的时间戳，格式：RFC3339格式
+  google.protobuf.Timestamp recalled_at = 3;
+  
+  // RPC状态，包含错误码和错误信息
+  flare.common.v1.RpcStatus status = 4;
+}
+
+// 删除消息请求
+message DeleteMessageRequest {
+  // 会话ID，标识要删除消息的会话
+  // 格式：{session_type}:{session_id}
+  // 必需字段，不能为空
+  string session_id = 1;
+  
+  // 消息ID列表，要删除的消息标识符列表
+  // 最多支持100条消息，超过限制会返回错误
+  // 必需字段，不能为空
+  repeated string message_ids = 2;
+  
+  // 请求上下文，包含请求追踪、用户信息、设备信息
+  // 必需字段，不能为空
+  flare.common.v1.RequestContext context = 3;
+  
+  // 租户上下文，包含租户信息，用于租户隔离
+  // 必需字段，不能为空
+  flare.common.v1.TenantContext tenant = 4;
+}
+
+// 删除消息响应
+message DeleteMessageResponse {
+  // 是否删除成功
+  // true: 删除成功（至少删除了一条消息）
+  // false: 删除失败，查看status获取错误信息
+  bool success = 1;
+  
+  // 删除的消息数量
+  // 实际删除的消息数量，可能小于请求的消息数量（如果部分消息不存在）
+  int32 deleted_count = 2;
+  
+  // RPC状态，包含错误码和错误信息
+  flare.common.v1.RpcStatus status = 3;
+}
+
+// 标记消息已读请求
+message MarkMessageReadRequest {
+  // 消息ID，要标记已读的消息标识符
+  // 格式：{tenant_id}:{timestamp}:{random}
+  // 必需字段，不能为空
+  string message_id = 1;
+  
+  // 用户ID，标记已读的用户标识符
+  // 必需字段，不能为空
+  string user_id = 2;
+  
+  // 请求上下文，包含请求追踪、用户信息、设备信息
+  // 必需字段，不能为空
+  flare.common.v1.RequestContext context = 3;
+  
+  // 租户上下文，包含租户信息，用于租户隔离
+  // 必需字段，不能为空
+  flare.common.v1.TenantContext tenant = 4;
+}
+
+// 标记消息已读响应
+message MarkMessageReadResponse {
+  // 是否标记成功
+  // true: 标记成功，消息已读状态已更新
+  // false: 标记失败，查看error_message获取失败原因
+  bool success = 1;
+  
+  // 错误消息
+  // 标记失败时的错误描述，成功时为空
+  string error_message = 2;
+  
+  // 已读时间
+  // 消息被标记为已读的时间戳，格式：RFC3339格式
+  google.protobuf.Timestamp read_at = 3;
+  
+  // 销毁时间
+  // 阅后即焚消息的销毁时间戳，格式：RFC3339格式
+  // 仅当消息设置了阅后即焚时返回
+  google.protobuf.Timestamp burned_at = 4;
+  
+  // RPC状态，包含错误码和错误信息
+  flare.common.v1.RpcStatus status = 5;
+}
+
+// -----------------------------------------------------------------------------
+// 服务定义
+// -----------------------------------------------------------------------------
+
+service MessageService {
+  // 发送单条消息（将消息发送到指定会话，经过PreSend Hook校验，支持同步/异步模式）
+  rpc SendMessage(SendMessageRequest) returns (SendMessageResponse);
+  
+  // 批量发送消息（一次性发送多条消息，最多100条，每条消息都经过PreSend Hook校验）
+  rpc BatchSendMessage(BatchSendMessageRequest) returns (BatchSendMessageResponse);
+  
+  // 发送系统消息（发送系统消息，跳过PreSend业务校验，需要管理员权限或系统权限）
+  rpc SendSystemMessage(SendSystemMessageRequest) returns (SendSystemMessageResponse);
+  
+  // 查询会话消息（根据会话ID、时间范围等条件查询消息列表，支持分页和游标）
+  rpc QueryMessages(QueryMessagesRequest) returns (QueryMessagesResponse);
+  
+  // 搜索消息（支持复杂的过滤条件、排序规则和时间范围搜索，支持全文搜索）
+  rpc SearchMessages(SearchMessagesRequest) returns (SearchMessagesResponse);
+  
+  // 获取单条消息（根据消息ID获取完整的消息详情）
+  rpc GetMessage(GetMessageRequest) returns (GetMessageResponse);
+  
+  // 撤回消息（撤回已发送的消息，支持设置撤回时间限制，只有发送者或管理员可以撤回）
+  rpc RecallMessage(RecallMessageRequest) returns (RecallMessageResponse);
+  
+  // 删除消息（从指定会话中删除一条或多条消息，最多100条，默认逻辑删除）
+  rpc DeleteMessage(DeleteMessageRequest) returns (DeleteMessageResponse);
+  
+  // 标记消息已读（记录用户对消息的已读状态，支持阅后即焚功能）
+  rpc MarkMessageRead(MarkMessageReadRequest) returns (MarkMessageReadResponse);
+}

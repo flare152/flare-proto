@@ -6,23 +6,36 @@ import "google/protobuf/timestamp.proto";
 import "common/errors.proto";
 import "common/metadata.proto";
 
+// -----------------------------------------------------------------------------
 // 信令服务
-service SignalingService {
-  // 用户登录
-  rpc Login(LoginRequest) returns (LoginResponse);
-  
-  // 用户登出
-  rpc Logout(LogoutRequest) returns (LogoutResponse);
-  
-  // 心跳
-  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
-  
-  // 获取在线状态
-  rpc GetOnlineStatus(GetOnlineStatusRequest) returns (GetOnlineStatusResponse);
-  
-  // 路由消息
-  rpc RouteMessage(RouteMessageRequest) returns (RouteMessageResponse);
+// -----------------------------------------------------------------------------
+// 职责：用户登录、在线状态管理、消息路由、信令订阅发布等核心能力
+// 依赖：Redis（在线状态存储）、Route Service（消息路由）
+//
+
+// -----------------------------------------------------------------------------
+// 枚举定义
+// -----------------------------------------------------------------------------
+
+// 设备冲突策略枚举（定义设备冲突时的解决策略）
+enum DeviceConflictStrategy {
+  DEVICE_CONFLICT_STRATEGY_UNSPECIFIED = 0;
+  DEVICE_CONFLICT_STRATEGY_EXCLUSIVE = 1;                  // 互斥（同一用户只能在一个设备上登录，新设备登录会踢出旧设备）
+  DEVICE_CONFLICT_STRATEGY_PLATFORM_EXCLUSIVE = 2;         // 平台互斥（同一平台只能在一个设备上登录，不同平台可以共存）
+  DEVICE_CONFLICT_STRATEGY_COEXIST = 3;                    // 共存（允许同一用户在多个设备上同时登录）
 }
+
+// 冲突动作枚举（定义设备冲突时执行的动作）
+enum ConflictAction {
+  CONFLICT_ACTION_UNSPECIFIED = 0;
+  CONFLICT_ACTION_LOGOUT = 1;                              // 登出（冲突时登出旧设备）
+  CONFLICT_ACTION_WARN = 2;                               // 警告（冲突时警告用户但不登出）
+  CONFLICT_ACTION_ALLOW = 3;                              // 允许（冲突时允许新设备登录，旧设备继续在线）
+}
+
+// -----------------------------------------------------------------------------
+// SignalingService 相关消息
+// -----------------------------------------------------------------------------
 
 // 登录请求
 message LoginRequest {
@@ -33,6 +46,9 @@ message LoginRequest {
   map<string, string> metadata = 5;
   flare.common.v1.RequestContext context = 6;
   flare.common.v1.TenantContext tenant = 7;
+  string device_platform = 8;
+  string app_version = 9;
+  DeviceConflictStrategy desired_conflict_strategy = 10;
 }
 
 // 登录响应
@@ -42,6 +58,7 @@ message LoginResponse {
   string route_server = 3;
   string error_message = 4;
   flare.common.v1.RpcStatus status = 5;
+  DeviceConflictStrategy applied_conflict_strategy = 6;
 }
 
 // 登出请求
@@ -85,22 +102,25 @@ message GetOnlineStatusResponse {
   flare.common.v1.RpcStatus status = 2;
 }
 
-// 在线状态
+// 在线状态（封装用户的在线状态信息）
 message OnlineStatus {
-  bool online = 1;
-  string server_id = 2;
-  string cluster_id = 3;
-  google.protobuf.Timestamp last_seen = 4;
-  flare.common.v1.TenantContext tenant = 5;
+  bool online = 1;                                         // 是否在线（true=在线，false=离线）
+  string server_id = 2;                                    // 服务器ID（仅当online=true时有效）
+  string cluster_id = 3;                                   // 集群ID（仅当online=true时有效）
+  google.protobuf.Timestamp last_seen = 4;                 // 最后活跃时间
+  flare.common.v1.TenantContext tenant = 5;                // 租户上下文
+  string device_id = 6;                                    // 设备ID（仅当online=true时有效）
+  string device_platform = 7;                             // 设备平台（ios/android/web/pc，仅当online=true时有效）
+  string gateway_id = 8;                                  // 网关ID（用于跨地区路由，仅当online=true时有效）
 }
 
 // 路由消息请求
 message RouteMessageRequest {
-  string user_id = 1;
-  string svid = 2;  // Service ID
-  bytes payload = 3;
-  flare.common.v1.RequestContext context = 4;
-  flare.common.v1.TenantContext tenant = 5;
+  string user_id = 1;                                      // 用户ID
+  string svid = 2;                                         // 服务ID（Service ID）
+  bytes payload = 3;                                      // 消息负载（二进制格式）
+  flare.common.v1.RequestContext context = 4;            // 请求上下文
+  flare.common.v1.TenantContext tenant = 5;                // 租户上下文
 }
 
 // 路由消息响应
@@ -111,3 +131,339 @@ message RouteMessageResponse {
   flare.common.v1.RpcStatus status = 4;
 }
 
+// 订阅请求
+message SubscribeRequest {
+  flare.common.v1.RequestContext context = 1;
+  flare.common.v1.TenantContext tenant = 2;
+  string user_id = 3;
+  repeated Subscription subscriptions = 4;
+}
+
+message Subscription {
+  string topic = 1;
+  map<string, string> params = 2;
+}
+
+message SubscribeResponse {
+  repeated Subscription granted = 1;
+  flare.common.v1.RpcStatus status = 2;
+}
+
+message UnsubscribeRequest {
+  flare.common.v1.RequestContext context = 1;
+  flare.common.v1.TenantContext tenant = 2;
+  string user_id = 3;
+  repeated string topics = 4;
+}
+
+message UnsubscribeResponse {
+  flare.common.v1.RpcStatus status = 1;
+}
+
+message PublishSignalRequest {
+  flare.common.v1.RequestContext context = 1;
+  flare.common.v1.TenantContext tenant = 2;
+  SignalEnvelope envelope = 3;
+}
+
+message PublishSignalResponse {
+  flare.common.v1.RpcStatus status = 1;
+}
+
+message SignalEnvelope {
+  string topic = 1;
+  string from = 2;
+  repeated string targets = 3;
+  bytes payload = 4;
+  map<string, string> metadata = 5;
+}
+
+message WatchPresenceRequest {
+  flare.common.v1.RequestContext context = 1;
+  flare.common.v1.TenantContext tenant = 2;
+  repeated string user_ids = 3;
+}
+
+message PresenceEvent {
+  string user_id = 1;
+  OnlineStatus status = 2;
+  google.protobuf.Timestamp occurred_at = 3;
+  ConflictAction conflict_action = 4;
+  string reason = 5;
+}
+
+// -----------------------------------------------------------------------------
+// UserService 相关消息
+// -----------------------------------------------------------------------------
+
+// 设备信息（简化版，用于业务端响应）
+message DeviceInfo {
+  // 设备ID，设备的唯一标识符
+  // 格式：业务系统自定义，建议使用 UUID
+  string device_id = 1;
+  
+  // 设备平台
+  // 设备运行的平台，如 "ios"、"android"、"web"、"pc"
+  string platform = 2;
+  
+  // 设备型号
+  // 设备的型号信息，如 "iPhone 14 Pro"、"Samsung Galaxy S23"
+  string model = 3;
+  
+  // 操作系统版本
+  // 设备操作系统的版本号，如 "iOS 17.0"、"Android 13"
+  string os_version = 4;
+  
+  // 最后活跃时间
+  // 设备最后活跃的时间戳，格式：RFC3339格式
+  google.protobuf.Timestamp last_active_time = 5;
+}
+
+// 用户在线状态
+message UserPresence {
+  // 用户ID，用户的唯一标识符
+  string user_id = 1;
+  
+  // 是否在线
+  // true: 用户当前在线（至少有一个设备在线）
+  // false: 用户当前离线（所有设备都离线）
+  bool is_online = 2;
+  
+  // 在线设备列表
+  // 当前在线的设备列表，包含设备ID、平台、最后活跃时间等
+  repeated DeviceInfo devices = 3;
+  
+  // 最后活跃时间
+  // 用户最后活跃的时间戳，格式：RFC3339格式
+  // 取所有设备中最后活跃时间的最大值
+  google.protobuf.Timestamp last_seen = 4;
+}
+
+// 查询用户在线状态请求
+message GetUserPresenceRequest {
+  // 用户ID，要查询的用户标识符
+  // 必需字段，不能为空
+  string user_id = 1;
+  
+  // 请求上下文，包含请求追踪、用户信息、设备信息
+  // 必需字段，不能为空
+  flare.common.v1.RequestContext context = 2;
+  
+  // 租户上下文，包含租户信息，用于租户隔离
+  // 必需字段，不能为空
+  flare.common.v1.TenantContext tenant = 3;
+}
+
+// 查询用户在线状态响应
+message GetUserPresenceResponse {
+  // 用户在线状态信息
+  // 包含是否在线、设备列表、最后活跃时间等
+  UserPresence presence = 1;
+  
+  // RPC状态，包含错误码和错误信息
+  flare.common.v1.RpcStatus status = 2;
+}
+
+// 批量查询在线状态请求
+message BatchGetUserPresenceRequest {
+  // 用户ID列表，要查询的用户标识符列表
+  // 最多支持100个用户，超过限制会返回错误
+  // 必需字段，不能为空
+  repeated string user_ids = 1;
+  
+  // 请求上下文，包含请求追踪、用户信息、设备信息
+  // 必需字段，不能为空
+  flare.common.v1.RequestContext context = 2;
+  
+  // 租户上下文，包含租户信息，用于租户隔离
+  // 必需字段，不能为空
+  flare.common.v1.TenantContext tenant = 3;
+}
+
+// 批量查询在线状态响应
+message BatchGetUserPresenceResponse {
+  // 用户在线状态映射
+  // user_id -> UserPresence，不存在的用户不会出现在结果中
+  map<string, UserPresence> presences = 1;
+  
+  // RPC状态，包含错误码和错误信息
+  flare.common.v1.RpcStatus status = 2;
+}
+
+// 订阅用户状态请求
+message SubscribeUserPresenceRequest {
+  // 要订阅的用户ID列表
+  // 必需字段，不能为空
+  repeated string user_ids = 1;
+  
+  // 请求上下文，包含请求追踪、用户信息、设备信息
+  // 必需字段，不能为空
+  flare.common.v1.RequestContext context = 2;
+  
+  // 租户上下文，包含租户信息，用于租户隔离
+  // 必需字段，不能为空
+  flare.common.v1.TenantContext tenant = 3;
+}
+
+// 用户状态变化事件
+message UserPresenceEvent {
+  // 用户ID，状态变化的用户标识符
+  string user_id = 1;
+  
+  // 是否在线
+  // true: 用户上线
+  // false: 用户下线
+  bool is_online = 2;
+  
+  // 设备ID，触发状态变化的设备标识符
+  // 可选字段，如果状态变化由特定设备触发
+  string device_id = 3;
+  
+  // 事件时间戳
+  // 状态变化发生的时间，格式：RFC3339格式
+  google.protobuf.Timestamp timestamp = 4;
+}
+
+// 列出用户设备请求
+message ListUserDevicesRequest {
+  // 用户ID，要查询的用户标识符
+  // 必需字段，不能为空
+  string user_id = 1;
+  
+  // 请求上下文，包含请求追踪、用户信息、设备信息
+  // 必需字段，不能为空
+  flare.common.v1.RequestContext context = 2;
+  
+  // 租户上下文，包含租户信息，用于租户隔离
+  // 必需字段，不能为空
+  flare.common.v1.TenantContext tenant = 3;
+}
+
+// 列出用户设备响应
+message ListUserDevicesResponse {
+  // 设备列表
+  // 用户的所有登录设备列表，包含在线和离线设备
+  repeated DeviceInfo devices = 1;
+  
+  // RPC状态，包含错误码和错误信息
+  flare.common.v1.RpcStatus status = 2;
+}
+
+// 踢出设备请求
+message KickDeviceRequest {
+  // 用户ID，要踢出设备的用户标识符
+  // 必需字段，不能为空
+  string user_id = 1;
+  
+  // 设备ID，要踢出的设备标识符
+  // 必需字段，不能为空
+  string device_id = 2;
+  
+  // 请求上下文，包含请求追踪、用户信息、设备信息
+  // 必需字段，不能为空
+  flare.common.v1.RequestContext context = 3;
+  
+  // 租户上下文，包含租户信息，用于租户隔离
+  // 必需字段，不能为空
+  flare.common.v1.TenantContext tenant = 4;
+}
+
+// 踢出设备响应
+message KickDeviceResponse {
+  // 是否踢出成功
+  // true: 踢出成功，设备已下线
+  // false: 踢出失败，查看status获取错误信息
+  bool success = 1;
+  
+  // RPC状态，包含错误码和错误信息
+  flare.common.v1.RpcStatus status = 2;
+}
+
+// 查询设备请求
+message GetDeviceRequest {
+  // 用户ID，设备所属的用户标识符
+  // 必需字段，不能为空
+  string user_id = 1;
+  
+  // 设备ID，要查询的设备标识符
+  // 必需字段，不能为空
+  string device_id = 2;
+  
+  // 请求上下文，包含请求追踪、用户信息、设备信息
+  // 必需字段，不能为空
+  flare.common.v1.RequestContext context = 3;
+  
+  // 租户上下文，包含租户信息，用于租户隔离
+  // 必需字段，不能为空
+  flare.common.v1.TenantContext tenant = 4;
+}
+
+// 查询设备响应
+message GetDeviceResponse {
+  // 设备详细信息
+  // 包含设备ID、平台、型号、操作系统版本、最后活跃时间等
+  DeviceInfo device = 1;
+  
+  // RPC状态，包含错误码和错误信息
+  flare.common.v1.RpcStatus status = 2;
+}
+
+// -----------------------------------------------------------------------------
+// 服务定义
+// -----------------------------------------------------------------------------
+
+service SignalingService {
+  // 用户登录（建立用户会话，支持设备冲突策略配置，返回会话ID和路由服务器信息）
+  rpc Login(LoginRequest) returns (LoginResponse);
+  
+  // 用户登出（销毁用户会话，清理在线状态和路由信息，触发Presence Hook）
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+  
+  // 心跳（保持会话活跃，更新用户在线状态和最后活跃时间，建议每30秒发送一次）
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  
+  // 获取在线状态（批量查询指定用户的在线状态信息，最多100个用户）
+  rpc GetOnlineStatus(GetOnlineStatusRequest) returns (GetOnlineStatusResponse);
+  
+  // 路由消息（将消息路由到指定的服务，通过svid标识，支持同步和异步两种模式）
+  rpc RouteMessage(RouteMessageRequest) returns (RouteMessageResponse);
+
+  // 订阅频道/主题（订阅指定的频道或主题，接收相关信令消息，需要权限验证）
+  rpc Subscribe(SubscribeRequest) returns (SubscribeResponse);
+  
+  // 取消订阅（取消对指定频道或主题的订阅）
+  rpc Unsubscribe(UnsubscribeRequest) returns (UnsubscribeResponse);
+  
+  // 发布信令消息（向订阅了指定主题的用户发布信令消息，支持点对点和广播两种模式）
+  rpc PublishSignal(PublishSignalRequest) returns (PublishSignalResponse);
+  
+  // 监听在线状态变化（通过流式接口实时接收指定用户的在线状态变化事件）
+  rpc WatchPresence(WatchPresenceRequest) returns (stream PresenceEvent);
+}
+
+// -----------------------------------------------------------------------------
+// 用户在线状态服务
+// -----------------------------------------------------------------------------
+// 职责：用户在线状态、设备管理等基础设施能力
+// 依赖：Signaling Service（在线状态存储）
+// 实现：由 flare-signaling 实现，Gateway 只做代理转发
+//
+service UserService {
+  // 查询用户在线状态（查询单个用户是否在线、设备列表等信息）
+  rpc GetUserPresence(GetUserPresenceRequest) returns (GetUserPresenceResponse);
+  
+  // 批量查询在线状态（批量查询多个用户的在线状态，最多100个用户）
+  rpc BatchGetUserPresence(BatchGetUserPresenceRequest) returns (BatchGetUserPresenceResponse);
+  
+  // 订阅用户状态变化（实时订阅用户状态变化，流式接口）
+  rpc SubscribeUserPresence(SubscribeUserPresenceRequest) returns (stream UserPresenceEvent);
+  
+  // 列出用户设备（查看用户所有登录设备，返回所有登录过的设备包括已下线）
+  rpc ListUserDevices(ListUserDevicesRequest) returns (ListUserDevicesResponse);
+  
+  // 踢出设备（强制下线指定设备，需要管理员权限或用户本人权限）
+  rpc KickDevice(KickDeviceRequest) returns (KickDeviceResponse);
+  
+  // 查询设备信息（查询设备详细信息，仅包含连接相关的设备信息）
+  rpc GetDevice(GetDeviceRequest) returns (GetDeviceResponse);
+}

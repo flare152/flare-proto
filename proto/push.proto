@@ -2,72 +2,233 @@ syntax = "proto3";
 
 package flare.push.v1;
 
+import "google/protobuf/timestamp.proto";
 import "common/errors.proto";
 import "common/metadata.proto";
 
+// -----------------------------------------------------------------------------
 // 推送服务
-service PushService {
-  // 推送消息
-  rpc PushMessage(PushMessageRequest) returns (PushMessageResponse);
-  
-  // 推送通知
-  rpc PushNotification(PushNotificationRequest) returns (PushNotificationResponse);
-}
+// -----------------------------------------------------------------------------
+// 职责：消息推送、通知推送、模板管理等核心能力
+// 依赖：Push Worker、第三方推送服务（APNS、FCM等）
+//
+
+// -----------------------------------------------------------------------------
+// 推送相关消息
+// -----------------------------------------------------------------------------
 
 // 推送消息请求
 message PushMessageRequest {
-  repeated string user_ids = 1;
-  bytes message = 2;
-  PushOptions options = 3;
-  flare.common.v1.RequestContext context = 4;
-  flare.common.v1.TenantContext tenant = 5;
+  repeated string user_ids = 1;                            // 接收者用户ID列表
+  bytes message = 2;                                       // 消息数据（二进制格式）
+  PushOptions options = 3;                                 // 推送选项（是否仅在线、是否持久化等）
+  flare.common.v1.RequestContext context = 4;            // 请求上下文
+  flare.common.v1.TenantContext tenant = 5;                // 租户上下文
+  string template_id = 6;                                  // 模板ID（使用预定义模板）
+  map<string, string> template_data = 7;                  // 模板数据（用于模板变量替换）
 }
 
 // 推送消息响应
 message PushMessageResponse {
-  int32 success_count = 1;
-  int32 fail_count = 2;
-  repeated string failed_user_ids = 3;
-  repeated PushFailure failures = 4;
-  flare.common.v1.RpcStatus status = 5;
+  int32 success_count = 1;                                 // 成功数量
+  int32 fail_count = 2;                                    // 失败数量
+  repeated string failed_user_ids = 3;                     // 失败的用户ID列表
+  repeated PushFailure failures = 4;                       // 失败详情列表
+  string task_id = 5;                                      // 推送任务ID（用于后续查询推送状态）
+  flare.common.v1.RpcStatus status = 6;
 }
 
 // 推送通知请求
 message PushNotificationRequest {
-  repeated string user_ids = 1;
-  Notification notification = 2;
-  PushOptions options = 3;
-  flare.common.v1.RequestContext context = 4;
-  flare.common.v1.TenantContext tenant = 5;
+  repeated string user_ids = 1;                            // 接收者用户ID列表
+  Notification notification = 2;                           // 通知内容（标题、内容、图标等）
+  PushOptions options = 3;                                // 推送选项（渠道、优先级、静音策略等）
+  flare.common.v1.RequestContext context = 4;            // 请求上下文
+  flare.common.v1.TenantContext tenant = 5;                // 租户上下文
+  string template_id = 6;                                  // 模板ID（使用预定义模板）
+  map<string, string> template_data = 7;                 // 模板数据（用于模板变量替换）
 }
 
 // 推送通知响应
 message PushNotificationResponse {
-  int32 success_count = 1;
-  int32 fail_count = 2;
-  repeated PushFailure failures = 3;
-  flare.common.v1.RpcStatus status = 4;
+  int32 success_count = 1;                                 // 成功数量
+  int32 fail_count = 2;                                    // 失败数量
+  repeated PushFailure failures = 3;                       // 失败详情列表
+  string task_id = 4;                                      // 推送任务ID（用于后续查询推送状态）
+  flare.common.v1.RpcStatus status = 5;
 }
 
-// 推送选项
+// 推送选项（定义推送的选项配置）
 message PushOptions {
-  bool require_online = 1;
-  bool persist_if_offline = 2;
-  int32 priority = 3;
-  map<string, string> metadata = 4;
+  bool require_online = 1;                                 // 是否仅在线（true=仅推送给在线用户）
+  bool persist_if_offline = 2;                             // 是否离线持久化（true=离线用户上线后补推）
+  int32 priority = 3;                                      // 优先级（1-10，数字越大优先级越高，默认5）
+  map<string, string> metadata = 4;                        // 扩展元数据
+  string channel = 5;                                      // 推送渠道（apns/fcm/webhook等，不提供时使用默认渠道）
+  bool mute_when_quiet = 6;                                // 是否静音时段静音（true=静音时段不推送）
 }
 
-// 通知
+// 通知（封装推送通知的内容）
 message Notification {
-  string title = 1;
-  string body = 2;
-  map<string, string> data = 3;
-  map<string, string> metadata = 4;
+  string title = 1;                                        // 标题（最大100字符）
+  string body = 2;                                         // 内容（最大500字符）
+  map<string, string> data = 3;                          // 通知数据（用于传递业务数据，客户端处理推送点击等）
+  map<string, string> metadata = 4;                        // 扩展元数据
+  string click_action = 5;                                 // 点击动作（跳转URL、打开页面等）
+  string icon = 6;                                         // 图标（图标URL或资源标识符）
+  string sound = 7;                                        // 声音（声音文件名称或资源标识符，不提供时使用默认声音）
 }
 
+// 推送失败信息（封装推送失败的详细信息）
 message PushFailure {
-  string user_id = 1;
-  flare.common.v1.ErrorCode code = 2;
-  string error_message = 3;
+  string user_id = 1;                                      // 用户ID
+  flare.common.v1.ErrorCode code = 2;                     // 错误码
+  string error_message = 3;                                // 错误信息
+  map<string, string> metadata = 4;                       // 扩展元数据
 }
 
+// -----------------------------------------------------------------------------
+// 模板管理相关消息
+// -----------------------------------------------------------------------------
+
+// 推送模板（可复用的推送模板，支持变量替换）
+message PushTemplate {
+  string template_id = 1;                                  // 模板ID（系统自动生成）
+  string name = 2;                                         // 模板名称
+  string channel = 3;                                      // 渠道（apns/fcm等）
+  string title = 4;                                        // 标题模板（支持{{variable}}格式）
+  string body = 5;                                         // 内容模板（支持{{variable}}格式）
+  map<string, string> default_data = 6;                   // 默认数据
+  bool enabled = 7;                                       // 是否启用
+  google.protobuf.Timestamp created_at = 8;                // 创建时间
+  google.protobuf.Timestamp updated_at = 9;                // 更新时间
+}
+
+message CreateTemplateRequest {
+  flare.common.v1.RequestContext context = 1;
+  flare.common.v1.TenantContext tenant = 2;
+  PushTemplate template = 3;
+}
+
+message CreateTemplateResponse {
+  PushTemplate template = 1;
+  flare.common.v1.RpcStatus status = 2;
+}
+
+message UpdateTemplateRequest {
+  flare.common.v1.RequestContext context = 1;
+  flare.common.v1.TenantContext tenant = 2;
+  PushTemplate template = 3;
+}
+
+message UpdateTemplateResponse {
+  PushTemplate template = 1;
+  flare.common.v1.RpcStatus status = 2;
+}
+
+message DeleteTemplateRequest {
+  flare.common.v1.RequestContext context = 1;
+  flare.common.v1.TenantContext tenant = 2;
+  string template_id = 3;
+}
+
+message DeleteTemplateResponse {
+  flare.common.v1.RpcStatus status = 1;
+}
+
+message ListTemplatesRequest {
+  flare.common.v1.RequestContext context = 1;
+  flare.common.v1.TenantContext tenant = 2;
+  flare.common.v1.Pagination pagination = 3;
+  repeated flare.common.v1.FilterExpression filters = 4;
+  repeated flare.common.v1.SortExpression sort = 5;
+}
+
+message ListTemplatesResponse {
+  repeated PushTemplate templates = 1;
+  flare.common.v1.Pagination pagination = 2;
+  flare.common.v1.RpcStatus status = 3;
+}
+
+// -----------------------------------------------------------------------------
+// 调度相关消息
+// -----------------------------------------------------------------------------
+
+// 推送调度（定时推送任务配置）
+message PushSchedule {
+  string schedule_id = 1;                                  // 调度ID
+  google.protobuf.Timestamp scheduled_at = 2;              // 调度时间
+  string timezone = 3;                                     // 时区
+  bool repeat = 4;                                         // 是否重复（true=重复推送，false=单次推送）
+  string cron = 5;                                         // Cron表达式（重复推送时使用）
+}
+
+message SchedulePushRequest {
+  flare.common.v1.RequestContext context = 1;
+  flare.common.v1.TenantContext tenant = 2;
+  PushNotificationRequest notification = 3;
+  PushSchedule schedule = 4;
+}
+
+message SchedulePushResponse {
+  string schedule_id = 1;
+  flare.common.v1.RpcStatus status = 2;
+}
+
+message CancelScheduledPushRequest {
+  flare.common.v1.RequestContext context = 1;
+  flare.common.v1.TenantContext tenant = 2;
+  string schedule_id = 3;
+}
+
+message CancelScheduledPushResponse {
+  flare.common.v1.RpcStatus status = 1;
+}
+
+message QueryPushStatusRequest {
+  flare.common.v1.RequestContext context = 1;
+  flare.common.v1.TenantContext tenant = 2;
+  string task_id = 3;
+}
+
+message QueryPushStatusResponse {
+  string task_id = 1;                                      // 推送任务ID
+  string status = 2;                                       // 任务状态（pending/running/completed/failed/cancelled）
+  int32 success_count = 3;                                 // 成功数量
+  int32 fail_count = 4;                                    // 失败数量
+  repeated PushFailure failures = 5;                        // 失败详情列表
+  flare.common.v1.RpcStatus rpc_status = 6;
+}
+
+// -----------------------------------------------------------------------------
+// 服务定义
+// -----------------------------------------------------------------------------
+
+service PushService {
+  // 推送消息（向指定用户推送原始消息数据，支持在线/离线推送、模板推送）
+  rpc PushMessage(PushMessageRequest) returns (PushMessageResponse);
+
+  // 推送通知（向指定用户推送系统通知，支持多种渠道、优先级、静音策略）
+  rpc PushNotification(PushNotificationRequest) returns (PushNotificationResponse);
+
+  // 创建推送模板（创建可复用的推送模板，支持变量替换，按渠道分类）
+  rpc CreateTemplate(CreateTemplateRequest) returns (CreateTemplateResponse);
+  
+  // 更新推送模板（更新已存在的推送模板内容）
+  rpc UpdateTemplate(UpdateTemplateRequest) returns (UpdateTemplateResponse);
+  
+  // 删除推送模板（删除指定的推送模板，删除操作不可逆）
+  rpc DeleteTemplate(DeleteTemplateRequest) returns (DeleteTemplateResponse);
+  
+  // 列出推送模板（分页查询推送模板列表，支持过滤和排序）
+  rpc ListTemplates(ListTemplatesRequest) returns (ListTemplatesResponse);
+
+  // 调度推送（创建定时推送任务，支持单次推送和重复推送，cron表达式）
+  rpc SchedulePush(SchedulePushRequest) returns (SchedulePushResponse);
+  
+  // 取消调度推送（取消已创建的定时推送任务）
+  rpc CancelScheduledPush(CancelScheduledPushRequest) returns (CancelScheduledPushResponse);
+  
+  // 查询推送状态（根据任务ID查询推送任务的执行状态和结果）
+  rpc QueryPushStatus(QueryPushStatusRequest) returns (QueryPushStatusResponse);
+}

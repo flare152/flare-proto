@@ -5,108 +5,639 @@ package flare.hooks.v1;
 import "google/protobuf/timestamp.proto";
 import "common/errors.proto";
 import "common/metadata.proto";
+import "storage.proto";
+import "session.proto";
 
-// Hook 调用基础上下文
+// -----------------------------------------------------------------------------
+// Hook 扩展服务接口定义
+// -----------------------------------------------------------------------------
+// 职责：为业务系统提供零侵入的消息管道扩展能力（消息验证、内容审核、通知、统计、审计等）
+// 依赖：storage.proto, session.proto, common/errors.proto, common/metadata.proto
+// Hook类型：PreSend（发送前，可中断）、PostSend（发送后）、Delivery（送达）、Recall（撤回）、
+//          SessionLifecycle（会话生命周期）、Presence（在线状态）、PushPreSend/PostSend/Delivery（推送）、
+//          UserLogin/Logout/Online/Offline（用户生命周期）、Custom（自定义）
+// 编排机制：Hook分组（validation/critical/business）、执行模式（Sequential/Concurrent）、错误策略（FailFast/Retry/Ignore）
+//
+
+// -----------------------------------------------------------------------------
+// 枚举定义
+// -----------------------------------------------------------------------------
+
+// Hook分组（用于编排执行策略）
+enum HookGroup {
+  HOOK_GROUP_UNSPECIFIED = 0;
+  HOOK_GROUP_VALIDATION = 1;  // 校验类（串行、快速失败，Priority 100-999）
+  HOOK_GROUP_CRITICAL = 2;    // 关键业务处理（串行、重试，Priority 100-999）
+  HOOK_GROUP_BUSINESS = 3;    // 非关键业务处理（并发、容错，Priority 0-99）
+}
+
+// Hook执行模式（决定Hook是串行还是并发执行）
+enum ExecutionMode {
+  EXECUTION_MODE_UNSPECIFIED = 0;
+  EXECUTION_MODE_SEQUENTIAL = 1;   // 串行执行（按优先级顺序）
+  EXECUTION_MODE_CONCURRENT = 2;   // 并发执行（提高性能）
+}
+
+// Hook错误策略（定义Hook执行失败时的错误处理策略）
+enum HookErrorPolicy {
+  HOOK_ERROR_POLICY_UNSPECIFIED = 0;
+  HOOK_ERROR_POLICY_FAIL_FAST = 1;  // 快速失败（立即中断）
+  HOOK_ERROR_POLICY_RETRY = 2;      // 重试策略（超过最大重试次数后告警）
+  HOOK_ERROR_POLICY_IGNORE = 3;     // 容错策略（记录日志但不中断）
+}
+
+// 生命周期事件类型枚举
+enum LifecycleEventType {
+  LIFECYCLE_EVENT_TYPE_UNSPECIFIED = 0;
+  LIFECYCLE_EVENT_CREATED = 1;                              // 会话创建
+  LIFECYCLE_EVENT_UPDATED = 2;                              // 会话更新（名称、头像、成员变更等）
+  LIFECYCLE_EVENT_DELETED = 3;                              // 会话删除
+  LIFECYCLE_EVENT_ARCHIVED = 4;                             // 会话归档（软删除）
+}
+
+// -----------------------------------------------------------------------------
+// HookExtension 相关消息
+// -----------------------------------------------------------------------------
+
+// Hook调用上下文（封装Hook调用时的上下文信息）
 message HookInvocationContext {
-  string tenant_id = 1;
-  string session_id = 2;
-  string session_type = 3;
-  string message_type = 4;
-  string sender_id = 5;
-  string trace_id = 6;
-  map<string, string> tags = 7;
-  flare.common.v1.RequestContext request_context = 8;
-  flare.common.v1.TenantContext tenant = 9;
-  map<string, string> attributes = 10;
+  flare.common.v1.RequestContext request_context = 1;
+  flare.common.v1.TenantContext tenant = 2;
+  string session_id = 3;                                    // 会话ID（某些Hook可能不涉及会话）
+  string session_type = 4;                                   // 会话类型（single/group/channel）
+  string corridor = 5;                                       // Hook所属通道（messaging/signaling/push）
+  map<string, string> tags = 6;                             // Hook选择和过滤标签
+  map<string, string> attributes = 7;                        // 扩展属性
 }
 
-// 消息草稿（Pre-Send 阶段可以修改）
+// Hook消息草稿（PreSend Hook中的消息草稿，未持久化，Hook可修改）
 message HookMessageDraft {
-  string message_id = 1;
-  string client_message_id = 2;
-  string conversation_id = 3;
-  bytes payload = 4;
-  map<string, string> headers = 5;
-  map<string, string> metadata = 6;
+  string message_id = 1;                                    // 消息ID（系统生成）
+  string client_message_id = 2;                             // 客户端消息ID（用于去重和幂等性）
+  string conversation_id = 3;                              // 会话ID
+  bytes payload = 4;                                        // 序列化后的消息内容
+  map<string, string> headers = 5;                         // 消息头（如content-type、priority）
+  map<string, string> metadata = 6;                         // 业务系统自定义数据
 }
 
-// 消息持久化记录
+// Hook消息记录（PostSend Hook中的消息记录，已持久化）
 message HookMessageRecord {
-  string message_id = 1;
-  string client_message_id = 2;
-  string conversation_id = 3;
-  string sender_id = 4;
-  string session_type = 5;
-  string message_type = 6;
-  google.protobuf.Timestamp persisted_at = 7;
-  map<string, string> metadata = 8;
+  flare.storage.v1.Message message = 1;
+  google.protobuf.Timestamp persisted_at = 2;              // 持久化时间
+  map<string, string> metadata = 3;
 }
 
-// 投递事件
+// Hook送达事件（消息送达事件信息）
 message HookDeliveryEvent {
   string message_id = 1;
   string user_id = 2;
-  string channel = 3;
-  google.protobuf.Timestamp delivered_at = 4;
+  string channel = 3;                                       // 送达渠道（push/websocket/apns/fcm）
+  google.protobuf.Timestamp delivered_at = 4;              // 送达时间
   map<string, string> metadata = 5;
 }
 
-// 撤回事件
+// Hook撤回事件（消息撤回事件信息）
 message HookRecallEvent {
   string message_id = 1;
-  string operator_id = 2;
-  google.protobuf.Timestamp recalled_at = 3;
-  map<string, string> metadata = 4;
+  string operator_id = 2;                                  // 操作者ID
+  google.protobuf.Timestamp recalled_at = 3;               // 撤回时间
+  map<string, string> metadata = 4;                        // 元数据（可包含撤回原因等）
 }
 
+// PreSend Hook请求
 message PreSendHookRequest {
   HookInvocationContext context = 1;
-  HookMessageDraft draft = 2;
+  HookMessageDraft draft = 2;                              // 消息草稿（未持久化，Hook可修改）
 }
 
+// PreSend Hook响应
 message PreSendHookResponse {
-  bool allow = 1;
-  HookMessageDraft draft = 2;
+  bool allow = 1;                                           // 是否允许发送（true=允许，false=阻止）
+  HookMessageDraft draft = 2;                               // Hook修改后的消息内容（仅当allow=true时有效）
   flare.common.v1.RpcStatus status = 3;
-  map<string, string> tags = 4;
+  map<string, string> annotations = 4;                     // Hook处理结果注解（如audit_result、risk_level）
 }
 
+// PostSend Hook请求
 message PostSendHookRequest {
   HookInvocationContext context = 1;
-  HookMessageRecord record = 2;
-  HookMessageDraft draft = 3;
+  HookMessageRecord record = 2;                             // 消息记录（已持久化）
+  HookMessageDraft draft = 3;                               // 发送前的草稿（用于对比和审计）
 }
 
+// PostSend Hook响应
 message PostSendHookResponse {
   bool success = 1;
   flare.common.v1.RpcStatus status = 2;
 }
 
+// Delivery Hook请求
 message DeliveryHookRequest {
   HookInvocationContext context = 1;
   HookDeliveryEvent event = 2;
 }
 
+// Delivery Hook响应
 message DeliveryHookResponse {
   bool success = 1;
   flare.common.v1.RpcStatus status = 2;
 }
 
+// Recall Hook请求
 message RecallHookRequest {
   HookInvocationContext context = 1;
   HookRecallEvent event = 2;
 }
 
+// Recall Hook响应
 message RecallHookResponse {
+  bool allow = 1;                                           // 是否允许撤回（true=允许，false=阻止，可中断）
+  flare.common.v1.RpcStatus status = 2;
+  map<string, string> annotations = 3;                     // Hook处理结果注解（如reason、retry_after）
+}
+
+// 会话生命周期事件（监听会话的创建、更新、删除、归档等事件）
+message SessionLifecycleEvent {
+  flare.session.v1.Session session = 1;                     // 会话对象
+  LifecycleEventType event = 2;                             // 事件类型
+  map<string, string> metadata = 3;                         // 扩展元数据
+}
+
+// 会话生命周期Hook请求
+message SessionLifecycleHookRequest {
+  HookInvocationContext context = 1;
+  SessionLifecycleEvent event = 2;
+}
+
+// 会话生命周期Hook响应
+message SessionLifecycleHookResponse {
   bool success = 1;
   flare.common.v1.RpcStatus status = 2;
 }
 
-// Hook Service 定义
-service HookExtension {
-  rpc InvokePreSend (PreSendHookRequest) returns (PreSendHookResponse);
-  rpc InvokePostSend (PostSendHookRequest) returns (PostSendHookResponse);
-  rpc NotifyDelivery (DeliveryHookRequest) returns (DeliveryHookResponse);
-  rpc NotifyRecall (RecallHookRequest) returns (RecallHookResponse);
+// 推送任务草稿（PushPreSend Hook中的推送任务草稿，未入队，Hook可修改）
+message HookPushDraft {
+  string task_id = 1;                                       // 任务ID（系统生成）
+  string user_id = 2;
+  string title = 3;                                        // 推送标题（Hook可修改）
+  string content = 4;                                      // 推送内容（Hook可修改）
+  string channel = 5;                                      // 推送渠道（push/apns/fcm/websocket，Hook可修改）
+  string message_id = 6;                                   // 关联的消息ID（如果推送的是消息）
+  map<string, string> metadata = 7;
 }
 
+// 推送任务记录（PushPostSend Hook中的推送任务记录，已入队，已写入Kafka）
+message HookPushRecord {
+  string task_id = 1;
+  string user_id = 2;
+  string title = 3;
+  string content = 4;
+  string channel = 5;
+  google.protobuf.Timestamp enqueued_at = 6;              // 入队时间
+  map<string, string> metadata = 7;
+}
+
+// 推送送达事件（推送送达事件信息）
+message HookPushDeliveryEvent {
+  string task_id = 1;
+  string user_id = 2;
+  string channel = 3;                                      // 送达渠道（push/apns/fcm）
+  google.protobuf.Timestamp delivered_at = 4;             // 送达时间
+  map<string, string> metadata = 5;
+}
+
+// PushPreSend Hook请求
+message PushPreSendHookRequest {
+  HookInvocationContext context = 1;
+  HookPushDraft draft = 2;                                 // 推送任务草稿（未入队，Hook可修改）
+}
+
+// PushPreSend Hook响应
+message PushPreSendHookResponse {
+  bool allow = 1;                                          // 是否允许推送（true=允许，false=阻止）
+  HookPushDraft draft = 2;                                // Hook修改后的推送内容（仅当allow=true时有效）
+  flare.common.v1.RpcStatus status = 3;
+  map<string, string> annotations = 4;                    // Hook处理结果注解（如strategy、reason）
+}
+
+// PushPostSend Hook请求
+message PushPostSendHookRequest {
+  HookInvocationContext context = 1;
+  HookPushRecord record = 2;                               // 推送任务记录（已入队，已写入Kafka）
+  HookPushDraft draft = 3;                                 // 入队前的草稿（用于对比和审计）
+}
+
+// PushPostSend Hook响应
+message PushPostSendHookResponse {
+  bool success = 1;
+  flare.common.v1.RpcStatus status = 2;
+}
+
+// PushDelivery Hook请求
+message PushDeliveryHookRequest {
+  HookInvocationContext context = 1;
+  HookPushDeliveryEvent event = 2;
+}
+
+// PushDelivery Hook响应
+message PushDeliveryHookResponse {
+  bool success = 1;
+  flare.common.v1.RpcStatus status = 2;
+}
+
+// 用户登录事件
+message UserLoginEvent {
+  string user_id = 1;
+  string device_id = 2;
+  string device_platform = 3;                              // 设备平台（ios/android/web/pc）
+  map<string, string> device_info = 4;                     // 设备信息（设备型号、系统版本等）
+  google.protobuf.Timestamp logged_in_at = 5;              // 登录时间
+  map<string, string> metadata = 6;
+}
+
+// 用户登出事件
+message UserLogoutEvent {
+  string user_id = 1;
+  string device_id = 2;
+  google.protobuf.Timestamp logged_out_at = 3;             // 登出时间
+  map<string, string> metadata = 4;
+}
+
+// 用户上线事件
+message UserOnlineEvent {
+  string user_id = 1;
+  string device_id = 2;
+  string device_platform = 3;                              // 设备平台（ios/android/web/pc）
+  google.protobuf.Timestamp online_at = 4;                 // 上线时间
+  map<string, string> metadata = 5;
+}
+
+// 用户下线事件
+message UserOfflineEvent {
+  string user_id = 1;
+  string device_id = 2;
+  google.protobuf.Timestamp offline_at = 3;                 // 下线时间
+  string reason = 4;                                       // 下线原因（logout/timeout/connection_lost）
+  map<string, string> metadata = 5;
+}
+
+// UserLogin Hook请求
+message UserLoginHookRequest {
+  HookInvocationContext context = 1;
+  UserLoginEvent event = 2;
+}
+
+// UserLogin Hook响应
+message UserLoginHookResponse {
+  bool allow = 1;                                          // 是否允许登录（true=允许，false=阻止，可中断）
+  flare.common.v1.RpcStatus status = 2;
+  map<string, string> annotations = 3;                     // Hook处理结果注解（如reason、retry_after）
+}
+
+// UserLogout Hook请求
+message UserLogoutHookRequest {
+  HookInvocationContext context = 1;
+  UserLogoutEvent event = 2;
+}
+
+// UserLogout Hook响应
+message UserLogoutHookResponse {
+  bool success = 1;
+  flare.common.v1.RpcStatus status = 2;
+}
+
+// UserOnline Hook请求
+message UserOnlineHookRequest {
+  HookInvocationContext context = 1;
+  UserOnlineEvent event = 2;
+}
+
+// UserOnline Hook响应
+message UserOnlineHookResponse {
+  bool success = 1;
+  flare.common.v1.RpcStatus status = 2;
+}
+
+// UserOffline Hook请求
+message UserOfflineHookRequest {
+  HookInvocationContext context = 1;
+  UserOfflineEvent event = 2;
+}
+
+// UserOffline Hook响应
+message UserOfflineHookResponse {
+  bool success = 1;
+  flare.common.v1.RpcStatus status = 2;
+}
+
+// 在线状态事件（监听用户设备在线状态的变化）
+message PresenceEvent {
+  string user_id = 1;
+  flare.session.v1.DeviceState state = 2;                  // 设备状态
+  string device_id = 3;
+  string device_platform = 4;                              // 设备平台（ios/android/web/pc）
+  google.protobuf.Timestamp occurred_at = 5;               // 事件发生时间
+  map<string, string> metadata = 6;
+}
+
+// Presence Hook请求
+message PresenceHookRequest {
+  HookInvocationContext context = 1;
+  PresenceEvent event = 2;
+}
+
+// Presence Hook响应
+message PresenceHookResponse {
+  bool success = 1;
+  flare.common.v1.RpcStatus status = 2;
+}
+
+// 自定义Hook请求（支持业务系统自定义扩展点）
+message CustomHookRequest {
+  HookInvocationContext context = 1;
+  string type = 2;                                         // Hook类型（如business_notification、audit_log、custom_event）
+  bytes payload = 3;                                       // 负载数据（格式由业务系统自定义）
+}
+
+// 自定义Hook响应
+message CustomHookResponse {
+  bool success = 1;
+  flare.common.v1.RpcStatus status = 2;
+}
+
+// -----------------------------------------------------------------------------
+// HookService 相关消息
+// -----------------------------------------------------------------------------
+
+// Hook配置（封装Hook的完整配置信息）
+message HookConfig {
+  string hook_id = 1;              // Hook配置ID（全局唯一，由系统自动生成）
+  string name = 2;                 // Hook名称（用于管理界面展示）
+  string hook_type = 3;            // Hook类型（pre_send/post_send/delivery/recall/session_lifecycle/presence）
+  string tenant_id = 4;            // 租户ID
+  int32 priority = 5;              // 优先级（1-1000，数字越小越先执行，建议使用10的倍数）
+  bool enabled = 6;                // 是否启用
+  HookTransport transport = 7;     // 传输方式配置（包括endpoint、secret等）
+  HookSelector selector = 8;       // Hook选择器（用于过滤消息，可选，不提供时匹配所有消息）
+  HookRetryPolicy retry_policy = 9; // 重试策略（可选，不提供时使用默认策略）
+  google.protobuf.Timestamp created_at = 10;  // 创建时间（RFC3339格式）
+  google.protobuf.Timestamp updated_at = 11;   // 更新时间（RFC3339格式）
+}
+
+// Hook传输方式（定义Hook的传输方式配置）
+message HookTransport {
+  string type = 1;           // 传输类型（grpc/webhook/local）
+  
+  // gRPC传输：服务发现优先，直接地址作为fallback
+  string service_name = 2;   // 服务发现模式：服务名称（优先级高，type=grpc时使用）
+  string endpoint = 3;       // 直接地址模式：gRPC地址（fallback/外部系统，type=grpc时使用）或HTTP URL（type=webhook时使用）
+  
+  // 服务发现配置（当service_name存在时生效）
+  string registry_type = 4;  // 注册中心类型（etcd/consul/mesh，可选，使用全局配置）
+  string namespace = 5;      // 命名空间（可选，使用全局配置）
+  string load_balance = 6;   // 负载均衡策略（round_robin/least_conn/consistent_hash/random，默认：round_robin）
+  
+  // WebHook专用
+  string secret = 7;         // WebHook签名密钥（仅当type=webhook时使用，可选）
+  map<string, string> headers = 8;  // 自定义请求头（仅当type=webhook时使用，可选）
+  
+  // Local Plugin专用
+  string target = 9;         // 本地插件名称（仅当type=local时使用，可选）
+  
+  // 通用配置
+  int32 timeout_ms = 10;     // 超时时间（毫秒，默认值：5000ms）
+  map<string, string> metadata = 11;  // 请求元数据（gRPC请求metadata，可选）
+}
+
+// Hook选择器（定义Hook的消息过滤规则）
+message HookSelector {
+  repeated string tenants = 1;         // 租户列表（空列表表示匹配所有租户）
+  repeated string session_types = 2;   // 会话类型列表（如["single", "group"]，空列表表示匹配所有会话类型）
+  repeated string message_types = 3;   // 消息类型列表（如["text", "image", "file"]，空列表表示匹配所有消息类型）
+  repeated string business_types = 4;   // 业务类型列表（用于业务系统自定义过滤，空列表表示匹配所有业务类型）
+}
+
+// Hook重试策略（定义Hook执行失败时的重试策略）
+message HookRetryPolicy {
+  int32 max_retries = 1;        // 最大重试次数（默认值：3）
+  int32 retry_interval_ms = 2;  // 重试间隔（毫秒，默认值：1000ms）
+  string backoff_strategy = 3;   // 退避策略（exponential=指数退避，linear=线性退避，默认值：exponential）
+}
+
+// 创建Hook配置请求
+message CreateHookConfigRequest {
+  string name = 1;                    // Hook名称（必需）
+  string hook_type = 2;               // Hook类型（必需）
+  string tenant_id = 3;               // 租户ID（必需）
+  int32 priority = 4;                 // 优先级（必需）
+  HookTransport transport = 5;        // 传输方式配置（必需）
+  HookSelector selector = 6;          // Hook选择器（可选）
+  HookRetryPolicy retry_policy = 7;   // 重试策略（可选）
+  flare.common.v1.RequestContext context = 8;
+}
+
+message CreateHookConfigResponse {
+  HookConfig config = 1;
+  flare.common.v1.RpcStatus status = 2;
+}
+
+// 获取Hook配置请求
+message GetHookConfigRequest {
+  string hook_id = 1;                 // Hook配置ID（必需）
+  flare.common.v1.RequestContext context = 2;
+}
+
+message GetHookConfigResponse {
+  HookConfig config = 1;
+  flare.common.v1.RpcStatus status = 2;
+}
+
+// 更新Hook配置请求
+message UpdateHookConfigRequest {
+  string hook_id = 1;                 // Hook配置ID（必需）
+  string name = 2;                    // Hook名称（可选，不提供时不更新）
+  int32 priority = 3;                 // 优先级（可选，不提供时不更新）
+  HookTransport transport = 4;        // 传输方式（可选，不提供时不更新）
+  HookSelector selector = 5;          // Hook选择器（可选，不提供时不更新）
+  HookRetryPolicy retry_policy = 6;   // 重试策略（可选，不提供时不更新）
+  flare.common.v1.RequestContext context = 7;
+}
+
+message UpdateHookConfigResponse {
+  HookConfig config = 1;
+  flare.common.v1.RpcStatus status = 2;
+}
+
+// 列出Hook配置请求
+message ListHookConfigsRequest {
+  string tenant_id = 1;              // 租户ID（可选，不提供时查询所有租户）
+  string hook_type = 2;               // Hook类型过滤（可选）
+  bool enabled_only = 3;              // 是否只查询启用的Hook（可选）
+  flare.common.v1.Pagination pagination = 4;
+  flare.common.v1.RequestContext context = 5;
+}
+
+message ListHookConfigsResponse {
+  repeated HookConfig configs = 1;
+  flare.common.v1.Pagination pagination = 2;
+  flare.common.v1.RpcStatus status = 3;
+}
+
+// 删除Hook配置请求
+message DeleteHookConfigRequest {
+  string hook_id = 1;                 // Hook配置ID（必需）
+  flare.common.v1.RequestContext context = 2;
+}
+
+message DeleteHookConfigResponse {
+  bool success = 1;
+  flare.common.v1.RpcStatus status = 2;
+}
+
+// 设置Hook状态请求
+message SetHookStatusRequest {
+  string hook_id = 1;                 // Hook配置ID（必需）
+  bool enabled = 2;                   // 是否启用（true=启用，false=禁用）
+  flare.common.v1.RequestContext context = 3;
+}
+
+message SetHookStatusResponse {
+  bool success = 1;
+  flare.common.v1.RpcStatus status = 2;
+}
+
+// Hook统计
+message HookStatistics {
+  string hook_id = 1;
+  int64 total_executions = 2;         // 总执行次数
+  int64 success_count = 3;             // 成功执行次数
+  int64 failure_count = 4;            // 失败执行次数
+  double avg_latency_ms = 5;          // 平均延迟（毫秒）
+  double p99_latency_ms = 6;          // P99延迟（毫秒）
+  int64 rate_limit_count = 7;         // 限流次数
+  int64 circuit_break_count = 8;      // 熔断次数
+  map<string, int64> error_count_by_code = 9;  // 按错误码统计的错误次数
+}
+
+// 查询Hook统计请求
+message GetHookStatisticsRequest {
+  string hook_id = 1;                 // Hook配置ID（必需）
+  flare.common.v1.TimeRange time_range = 2;  // 时间范围（可选，不提供时查询最近24小时）
+  flare.common.v1.RequestContext context = 3;
+}
+
+message GetHookStatisticsResponse {
+  HookStatistics statistics = 1;
+  flare.common.v1.RpcStatus status = 2;
+}
+
+// Hook执行记录
+message HookExecution {
+  string execution_id = 1;            // 执行ID
+  string hook_id = 2;                 // Hook配置ID
+  string message_id = 3;              // 消息ID
+  bool success = 4;                   // 是否成功
+  int32 latency_ms = 5;               // 延迟（毫秒）
+  string error_code = 6;              // 错误码（失败时）
+  string error_message = 7;           // 错误信息（失败时）
+  google.protobuf.Timestamp executed_at = 8;  // 执行时间
+}
+
+// 查询Hook执行历史请求
+message QueryHookExecutionsRequest {
+  string hook_id = 1;                 // Hook配置ID（可选，不提供时查询所有Hook）
+  string message_id = 2;              // 消息ID（可选，用于查询特定消息的Hook执行记录）
+  bool success_only = 3;              // 是否只查询成功的记录（可选）
+  flare.common.v1.TimeRange time_range = 4;
+  flare.common.v1.Pagination pagination = 5;
+  flare.common.v1.RequestContext context = 6;
+}
+
+message QueryHookExecutionsResponse {
+  repeated HookExecution executions = 1;
+  flare.common.v1.Pagination pagination = 2;
+  flare.common.v1.RpcStatus status = 3;
+}
+
+// -----------------------------------------------------------------------------
+// 服务定义
+// -----------------------------------------------------------------------------
+
+// Hook 执行服务
+// 职责：提供消息、会话、在线状态等各类Hook的调用接口（消息验证、内容审核、通知、统计、审计等）
+// 依赖：Hook Engine（flare-hook-engine）
+//
+service HookExtension {
+  // 调用发送前Hook（消息过滤、内容审核、内容转换，同步执行，可中断发送并修改消息内容）
+  rpc InvokePreSend (PreSendHookRequest) returns (PreSendHookResponse);
+  
+  // 调用发送后Hook（消息已持久化，用于通知、统计、日志，异步执行）
+  rpc InvokePostSend (PostSendHookRequest) returns (PostSendHookResponse);
+  
+  // 通知消息送达（送达统计、通知、回执，异步执行，支持多端送达）
+  rpc NotifyDelivery (DeliveryHookRequest) returns (DeliveryHookResponse);
+  
+  // 通知消息撤回（撤回通知、审计、统计，异步执行，可中断撤回）
+  rpc NotifyRecall (RecallHookRequest) returns (RecallHookResponse);
+  
+  // 通知会话生命周期事件（会话创建、更新、删除、归档，异步执行）
+  rpc NotifySessionLifecycle (SessionLifecycleHookRequest) returns (SessionLifecycleHookResponse);
+  
+  // 通知在线状态变化（上线、下线、冲突等，异步执行）
+  rpc NotifyPresence (PresenceHookRequest) returns (PresenceHookResponse);
+  
+  // 调用自定义Hook（业务自定义扩展点，支持任意类型的业务逻辑，异步执行）
+  rpc InvokeCustom (CustomHookRequest) returns (CustomHookResponse);
+  
+  // 调用推送前Hook（推送策略、免打扰、渠道选择，同步执行，可中断推送并修改推送内容）
+  rpc InvokePushPreSend (PushPreSendHookRequest) returns (PushPreSendHookResponse);
+  
+  // 调用推送后Hook（推送任务已入队，用于任务记录、审计、通知，异步执行）
+  rpc InvokePushPostSend (PushPostSendHookRequest) returns (PushPostSendHookResponse);
+  
+  // 通知推送送达（送达统计、回执、效果分析，异步执行，支持多端送达）
+  rpc NotifyPushDelivery (PushDeliveryHookRequest) returns (PushDeliveryHookResponse);
+  
+  // 通知用户登录（登录校验、设备管理、状态同步，同步执行，可中断登录）
+  rpc NotifyUserLogin (UserLoginHookRequest) returns (UserLoginHookResponse);
+  
+  // 通知用户登出（状态更新、资源清理、登出审计，异步执行）
+  rpc NotifyUserLogout (UserLogoutHookRequest) returns (UserLogoutHookResponse);
+  
+  // 通知用户上线（状态通知、提醒、状态同步，异步执行）
+  rpc NotifyUserOnline (UserOnlineHookRequest) returns (UserOnlineHookResponse);
+  
+  // 通知用户下线（状态更新、离线处理、状态通知，异步执行）
+  rpc NotifyUserOffline (UserOfflineHookRequest) returns (UserOfflineHookResponse);
+}
+
+// Hook 配置管理服务
+// 职责：Hook配置的创建、更新、查询等管理能力
+// 依赖：Hook Engine（flare-hook-engine）
+// 实现：由 flare-hook-engine 实现，Gateway 只做代理转发
+//
+service HookService {
+  // 创建Hook配置（为租户创建Hook配置，hook_id由系统自动生成，配置创建后立即生效）
+  rpc CreateHookConfig(CreateHookConfigRequest) returns (CreateHookConfigResponse);
+  
+  // 获取Hook配置（获取Hook配置详情）
+  rpc GetHookConfig(GetHookConfigRequest) returns (GetHookConfigResponse);
+  
+  // 更新Hook配置（更新Hook配置，配置更新后立即生效，无需重启服务）
+  rpc UpdateHookConfig(UpdateHookConfigRequest) returns (UpdateHookConfigResponse);
+  
+  // 列出Hook配置（列出租户的所有Hook配置，支持按租户、类型、状态过滤和分页）
+  rpc ListHookConfigs(ListHookConfigsRequest) returns (ListHookConfigsResponse);
+  
+  // 删除Hook配置（删除Hook配置，删除后Hook立即停止执行，操作不可逆）
+  rpc DeleteHookConfig(DeleteHookConfigRequest) returns (DeleteHookConfigResponse);
+  
+  // 启用/禁用Hook（临时启用或禁用Hook，禁用后Hook立即停止执行，可以随时重新启用）
+  rpc SetHookStatus(SetHookStatusRequest) returns (SetHookStatusResponse);
+  
+  // 查询Hook执行统计（查询Hook的执行统计信息，统计数据可能有轻微延迟）
+  rpc GetHookStatistics(GetHookStatisticsRequest) returns (GetHookStatisticsResponse);
+  
+  // 查询Hook执行历史（查询Hook的执行历史记录，支持按Hook、消息、时间范围过滤和分页）
+  rpc QueryHookExecutions(QueryHookExecutionsRequest) returns (QueryHookExecutionsResponse);
+}

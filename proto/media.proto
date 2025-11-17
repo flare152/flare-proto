@@ -6,46 +6,78 @@ import "google/protobuf/timestamp.proto";
 import "common/errors.proto";
 import "common/metadata.proto";
 
+// -----------------------------------------------------------------------------
 // 媒体服务
-service MediaService {
-  // 上传文件 (流式)
-  rpc UploadFile(stream UploadFileRequest) returns (UploadFileResponse);
-  // 初始化分片上传
-  rpc InitiateMultipartUpload(InitiateMultipartUploadRequest) returns (InitiateMultipartUploadResponse);
-  // 上传单个分片
-  rpc UploadMultipartChunk(UploadMultipartChunkRequest) returns (UploadMultipartChunkResponse);
-  // 完成分片上传
-  rpc CompleteMultipartUpload(CompleteMultipartUploadRequest) returns (UploadFileResponse);
-  // 取消分片上传
-  rpc AbortMultipartUpload(AbortMultipartUploadRequest) returns (AbortMultipartUploadResponse);
-  
-  // 创建媒资引用
-  rpc CreateReference(CreateReferenceRequest) returns (CreateReferenceResponse);
-  
-  // 删除媒资引用
-  rpc DeleteReference(DeleteReferenceRequest) returns (DeleteReferenceResponse);
-  
-  // 列出媒资引用
-  rpc ListReferences(ListReferencesRequest) returns (ListReferencesResponse);
-  
-  // 清理孤立媒资
-  rpc CleanupOrphanedAssets(CleanupOrphanedAssetsRequest) returns (CleanupOrphanedAssetsResponse);
-  
-  // 获取文件URL
-  rpc GetFileUrl(GetFileUrlRequest) returns (GetFileUrlResponse);
-  
-  // 获取文件信息
-  rpc GetFileInfo(GetFileInfoRequest) returns (GetFileInfoResponse);
-  
-  // 删除文件
-  rpc DeleteFile(DeleteFileRequest) returns (DeleteFileResponse);
-  
-  // 处理图片
-  rpc ProcessImage(ProcessImageRequest) returns (ProcessImageResponse);
-  
-  // 处理视频
-  rpc ProcessVideo(ProcessVideoRequest) returns (ProcessVideoResponse);
+// -----------------------------------------------------------------------------
+// 职责：文件上传、下载、处理、引用管理等核心能力
+// 依赖：对象存储（MinIO/S3）、CDN（可选）
+//
+
+// -----------------------------------------------------------------------------
+// 枚举定义
+// -----------------------------------------------------------------------------
+
+enum FileType {
+  FILE_TYPE_UNSPECIFIED = 0;
+  FILE_TYPE_IMAGE = 1;
+  FILE_TYPE_VIDEO = 2;
+  FILE_TYPE_AUDIO = 3;
+  FILE_TYPE_DOCUMENT = 4;
+  FILE_TYPE_OTHER = 5;
 }
+
+enum WatermarkPosition {
+  WATERMARK_POSITION_UNSPECIFIED = 0;
+  WATERMARK_POSITION_TOP_LEFT = 1;
+  WATERMARK_POSITION_TOP_RIGHT = 2;
+  WATERMARK_POSITION_BOTTOM_LEFT = 3;
+  WATERMARK_POSITION_BOTTOM_RIGHT = 4;
+  WATERMARK_POSITION_CENTER = 5;
+}
+
+// -----------------------------------------------------------------------------
+// 数据模型
+// -----------------------------------------------------------------------------
+
+// 文件信息
+message FileInfo {
+  string file_id = 1;
+  string file_name = 2;
+  string mime_type = 3;
+  int64 size = 4;
+  string url = 5;
+  string cdn_url = 6;
+  google.protobuf.Timestamp created_at = 7;
+  map<string, string> metadata = 8;
+  flare.common.v1.TenantContext tenant = 9;
+  uint64 reference_count = 10;
+  string status = 11;
+  string sha256 = 12;
+  string md5 = 13;
+  google.protobuf.Timestamp grace_expires_at = 14;
+  string bucket = 15;
+  string object_key = 16;
+}
+
+message MediaReferenceInfo {
+  string reference_id = 1;
+  string file_id = 2;
+  string namespace = 3;
+  string owner_id = 4;
+  string business_tag = 5;
+  map<string, string> metadata = 6;
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp expires_at = 8;
+}
+
+message AccessControlEntry {
+  string principal = 1; // user / role / tenant
+  repeated string permissions = 2; // read / write / delete / manage
+}
+
+// -----------------------------------------------------------------------------
+// 上传相关消息
+// -----------------------------------------------------------------------------
 
 // 上传文件请求
 message UploadFileRequest {
@@ -68,15 +100,9 @@ message UploadFileMetadata {
   string trace_id = 10;
   string namespace = 11;
   string business_tag = 12;
-}
-
-enum FileType {
-  FILE_TYPE_UNSPECIFIED = 0;
-  FILE_TYPE_IMAGE = 1;
-  FILE_TYPE_VIDEO = 2;
-  FILE_TYPE_AUDIO = 3;
-  FILE_TYPE_DOCUMENT = 4;
-  FILE_TYPE_OTHER = 5;
+  string bucket = 13;
+  string object_key = 14;
+  map<string, string> labels = 15;
 }
 
 // 上传文件响应
@@ -88,94 +114,6 @@ message UploadFileResponse {
   bool success = 5;
   string error_message = 6;
   flare.common.v1.RpcStatus status = 7;
-}
-
-// 文件信息
-message FileInfo {
-  string file_id = 1;
-  string file_name = 2;
-  string mime_type = 3;
-  int64 size = 4;
-  string url = 5;
-  string cdn_url = 6;
-  google.protobuf.Timestamp created_at = 7;
-  map<string, string> metadata = 8;
-  flare.common.v1.TenantContext tenant = 9;
-  uint64 reference_count = 10;
-  string status = 11;
-  string sha256 = 12;
-  string md5 = 13;
-  google.protobuf.Timestamp grace_expires_at = 14;
-}
-
-message MediaReferenceInfo {
-  string reference_id = 1;
-  string file_id = 2;
-  string namespace = 3;
-  string owner_id = 4;
-  string business_tag = 5;
-  map<string, string> metadata = 6;
-  google.protobuf.Timestamp created_at = 7;
-  google.protobuf.Timestamp expires_at = 8;
-}
-
-message CreateReferenceRequest {
-  string file_id = 1;
-  string namespace = 2;
-  string owner_id = 3;
-  string business_tag = 4;
-  map<string, string> metadata = 5;
-  flare.common.v1.RequestContext context = 6;
-  flare.common.v1.TenantContext tenant = 7;
-}
-
-message CreateReferenceResponse {
-  FileInfo info = 1;
-  bool success = 2;
-  string error_message = 3;
-  flare.common.v1.RpcStatus status = 4;
-}
-
-message DeleteReferenceRequest {
-  string file_id = 1;
-  string reference_id = 2;
-  flare.common.v1.RequestContext context = 3;
-  flare.common.v1.TenantContext tenant = 4;
-}
-
-message DeleteReferenceResponse {
-  FileInfo info = 1;
-  bool success = 2;
-  string error_message = 3;
-  flare.common.v1.RpcStatus status = 4;
-}
-
-message ListReferencesRequest {
-  string file_id = 1;
-  flare.common.v1.Pagination pagination = 2;
-  flare.common.v1.RequestContext context = 3;
-  flare.common.v1.TenantContext tenant = 4;
-}
-
-message ListReferencesResponse {
-  repeated MediaReferenceInfo references = 1;
-  flare.common.v1.Pagination pagination = 2;
-  bool success = 3;
-  string error_message = 4;
-  flare.common.v1.RpcStatus status = 5;
-}
-
-message CleanupOrphanedAssetsRequest {
-  uint32 limit = 1;
-  flare.common.v1.RequestContext context = 2;
-  flare.common.v1.TenantContext tenant = 3;
-}
-
-message CleanupOrphanedAssetsResponse {
-  repeated string file_ids = 1;
-  bool success = 2;
-  string error_message = 3;
-  flare.common.v1.RpcStatus status = 4;
 }
 
 message InitiateMultipartUploadRequest {
@@ -228,12 +166,87 @@ message AbortMultipartUploadResponse {
   flare.common.v1.RpcStatus status = 3;
 }
 
+// -----------------------------------------------------------------------------
+// 引用管理相关消息
+// -----------------------------------------------------------------------------
+
+message CreateReferenceRequest {
+  string file_id = 1;
+  string namespace = 2;
+  string owner_id = 3;
+  string business_tag = 4;
+  map<string, string> metadata = 5;
+  flare.common.v1.RequestContext context = 6;
+  flare.common.v1.TenantContext tenant = 7;
+  string display_name = 8;
+  string description = 9;
+}
+
+message CreateReferenceResponse {
+  FileInfo info = 1;
+  bool success = 2;
+  string error_message = 3;
+  flare.common.v1.RpcStatus status = 4;
+}
+
+message DeleteReferenceRequest {
+  string file_id = 1;
+  string reference_id = 2;
+  flare.common.v1.RequestContext context = 3;
+  flare.common.v1.TenantContext tenant = 4;
+}
+
+message DeleteReferenceResponse {
+  FileInfo info = 1;
+  bool success = 2;
+  string error_message = 3;
+  flare.common.v1.RpcStatus status = 4;
+}
+
+message ListReferencesRequest {
+  string file_id = 1;
+  flare.common.v1.Pagination pagination = 2;
+  flare.common.v1.RequestContext context = 3;
+  flare.common.v1.TenantContext tenant = 4;
+  repeated flare.common.v1.FilterExpression filters = 5;
+  repeated flare.common.v1.SortExpression sort = 6;
+}
+
+message ListReferencesResponse {
+  repeated MediaReferenceInfo references = 1;
+  flare.common.v1.Pagination pagination = 2;
+  bool success = 3;
+  string error_message = 4;
+  flare.common.v1.RpcStatus status = 5;
+}
+
+message CleanupOrphanedAssetsRequest {
+  uint32 limit = 1;
+  flare.common.v1.RequestContext context = 2;
+  flare.common.v1.TenantContext tenant = 3;
+  bool dry_run = 4;
+}
+
+message CleanupOrphanedAssetsResponse {
+  repeated string file_ids = 1;
+  bool success = 2;
+  string error_message = 3;
+  flare.common.v1.RpcStatus status = 4;
+  uint32 scanned = 5;
+}
+
+// -----------------------------------------------------------------------------
+// 文件访问相关消息
+// -----------------------------------------------------------------------------
+
 // 获取文件URL请求
 message GetFileUrlRequest {
   string file_id = 1;
   int32 expires_in = 2;                // 过期时间(秒)，默认 3600
   flare.common.v1.RequestContext context = 3;
   flare.common.v1.TenantContext tenant = 4;
+  bool download = 5;
+  map<string, string> response_headers = 6;
 }
 
 // 获取文件URL响应
@@ -266,6 +279,7 @@ message DeleteFileRequest {
   string file_id = 1;
   flare.common.v1.RequestContext context = 2;
   flare.common.v1.TenantContext tenant = 3;
+  bool hard_delete = 4;
 }
 
 // 删除文件响应
@@ -275,12 +289,18 @@ message DeleteFileResponse {
   flare.common.v1.RpcStatus status = 3;
 }
 
+// -----------------------------------------------------------------------------
+// 图片处理相关消息
+// -----------------------------------------------------------------------------
+
 // 处理图片请求
 message ProcessImageRequest {
   string file_id = 1;
   repeated ImageOperation operations = 2;
   flare.common.v1.RequestContext context = 3;
   flare.common.v1.TenantContext tenant = 4;
+  string target_bucket = 5;
+  string output_prefix = 6;
 }
 
 message ImageOperation {
@@ -311,15 +331,6 @@ message WatermarkOperation {
   WatermarkPosition position = 2;
 }
 
-enum WatermarkPosition {
-  WATERMARK_POSITION_UNSPECIFIED = 0;
-  WATERMARK_POSITION_TOP_LEFT = 1;
-  WATERMARK_POSITION_TOP_RIGHT = 2;
-  WATERMARK_POSITION_BOTTOM_LEFT = 3;
-  WATERMARK_POSITION_BOTTOM_RIGHT = 4;
-  WATERMARK_POSITION_CENTER = 5;
-}
-
 // 处理图片响应
 message ProcessImageResponse {
   string processed_file_id = 1;
@@ -330,12 +341,18 @@ message ProcessImageResponse {
   flare.common.v1.RpcStatus status = 6;
 }
 
+// -----------------------------------------------------------------------------
+// 视频处理相关消息
+// -----------------------------------------------------------------------------
+
 // 处理视频请求
 message ProcessVideoRequest {
   string file_id = 1;
   repeated VideoOperation operations = 2;
   flare.common.v1.RequestContext context = 3;
   flare.common.v1.TenantContext tenant = 4;
+  string target_bucket = 5;
+  string output_prefix = 6;
 }
 
 message VideoOperation {
@@ -343,12 +360,15 @@ message VideoOperation {
     TranscodeOperation transcode = 1;
     ExtractThumbnailOperation extract_thumbnail = 2;
     CompressVideoOperation compress = 3;
+    SubtitleBurnOperation subtitle_burn = 4;
   }
 }
 
 message TranscodeOperation {
   string format = 1;                  // mp4, webm, etc.
   string quality = 2;                 // high, medium, low
+  int32 target_bitrate_kbps = 3;
+  int32 max_width = 4;
 }
 
 message ExtractThumbnailOperation {
@@ -357,6 +377,12 @@ message ExtractThumbnailOperation {
 
 message CompressVideoOperation {
   int32 bitrate = 1;                   // 比特率
+  string preset = 2;
+}
+
+message SubtitleBurnOperation {
+  string subtitle_file_id = 1;
+  string language = 2;
 }
 
 // 处理视频响应
@@ -369,3 +395,124 @@ message ProcessVideoResponse {
   flare.common.v1.RpcStatus status = 6;
 }
 
+// -----------------------------------------------------------------------------
+// 管理扩展相关消息
+// -----------------------------------------------------------------------------
+
+message SetObjectAclRequest {
+  string file_id = 1;
+  flare.common.v1.RequestContext context = 2;
+  flare.common.v1.TenantContext tenant = 3;
+  repeated AccessControlEntry entries = 4;
+}
+
+message SetObjectAclResponse {
+  flare.common.v1.RpcStatus status = 1;
+}
+
+message ListObjectsRequest {
+  flare.common.v1.RequestContext context = 1;
+  flare.common.v1.TenantContext tenant = 2;
+  string bucket = 3;
+  string prefix = 4;
+  flare.common.v1.Pagination pagination = 5;
+  repeated flare.common.v1.FilterExpression filters = 6;
+  repeated flare.common.v1.SortExpression sort = 7;
+}
+
+message ListObjectsResponse {
+  repeated FileInfo files = 1;
+  flare.common.v1.Pagination pagination = 2;
+  flare.common.v1.RpcStatus status = 3;
+}
+
+message GenerateUploadUrlRequest {
+  flare.common.v1.RequestContext context = 1;
+  flare.common.v1.TenantContext tenant = 2;
+  string bucket = 3;
+  string object_key = 4;
+  string mime_type = 5;
+  int64 expected_size = 6;
+  int32 expires_in = 7;
+}
+
+message GenerateUploadUrlResponse {
+  string upload_url = 1;
+  string object_key = 2;
+  flare.common.v1.RpcStatus status = 3;
+}
+
+message DescribeBucketRequest {
+  flare.common.v1.RequestContext context = 1;
+  flare.common.v1.TenantContext tenant = 2;
+  string bucket = 3;
+}
+
+message DescribeBucketResponse {
+  string bucket = 1;
+  string region = 2;
+  string storage_class = 3;
+  bool versioning_enabled = 4;
+  map<string, string> metadata = 5;
+  flare.common.v1.RpcStatus status = 6;
+}
+
+// -----------------------------------------------------------------------------
+// 服务定义
+// -----------------------------------------------------------------------------
+
+service MediaService {
+  // 上传文件（流式，适用于小文件<100MB，第一次请求发送元数据，后续请求发送文件数据块）
+  rpc UploadFile(stream UploadFileRequest) returns (UploadFileResponse);
+  
+  // 初始化分片上传（初始化大文件的分片上传，返回upload_id和分片大小，支持断点续传）
+  rpc InitiateMultipartUpload(InitiateMultipartUploadRequest) returns (InitiateMultipartUploadResponse);
+  
+  // 上传单个分片（上传文件的一个分片，通过chunk_index指定分片序号，支持并发上传）
+  rpc UploadMultipartChunk(UploadMultipartChunkRequest) returns (UploadMultipartChunkResponse);
+  
+  // 完成分片上传（所有分片上传完成后调用，合并分片生成完整文件）
+  rpc CompleteMultipartUpload(CompleteMultipartUploadRequest) returns (UploadFileResponse);
+  
+  // 取消分片上传（取消进行中的分片上传，清理已上传的分片数据，操作不可逆）
+  rpc AbortMultipartUpload(AbortMultipartUploadRequest) returns (AbortMultipartUploadResponse);
+  
+  // 创建媒资引用（为已存在的文件创建引用，用于多业务场景共享同一文件，引用计数机制）
+  rpc CreateReference(CreateReferenceRequest) returns (CreateReferenceResponse);
+  
+  // 删除媒资引用（删除文件的指定引用，减少引用计数，引用计数为0时文件进入待删除状态）
+  rpc DeleteReference(DeleteReferenceRequest) returns (DeleteReferenceResponse);
+  
+  // 列出媒资引用（查询指定文件的所有引用信息，支持分页、过滤和排序）
+  rpc ListReferences(ListReferencesRequest) returns (ListReferencesResponse);
+  
+  // 清理孤立媒资（清理没有引用的孤立文件，引用计数为0且超过宽限期，支持dry_run预览）
+  rpc CleanupOrphanedAssets(CleanupOrphanedAssetsRequest) returns (CleanupOrphanedAssetsResponse);
+  
+  // 获取文件URL（获取文件的临时访问URL，支持设置过期时间，默认3600秒，支持CDN加速）
+  rpc GetFileUrl(GetFileUrlRequest) returns (GetFileUrlResponse);
+
+  // 获取文件信息（获取文件的详细信息，包括大小、类型、创建时间、引用计数等）
+  rpc GetFileInfo(GetFileInfoRequest) returns (GetFileInfoResponse);
+
+  // 删除文件（删除指定文件，hard_delete=true时立即物理删除，false时逻辑删除）
+  rpc DeleteFile(DeleteFileRequest) returns (DeleteFileResponse);
+
+  // 处理图片（对图片进行各种处理操作：缩放、压缩、生成缩略图、添加水印等，异步处理）
+  rpc ProcessImage(ProcessImageRequest) returns (ProcessImageResponse);
+
+  // 处理视频（对视频进行转码、压缩、提取缩略图、烧录字幕等操作，异步处理）
+  rpc ProcessVideo(ProcessVideoRequest) returns (ProcessVideoResponse);
+  
+  // 设置对象ACL（设置文件的访问控制列表，控制哪些用户/角色可以访问，支持细粒度权限控制）
+  rpc SetObjectAcl(SetObjectAclRequest) returns (SetObjectAclResponse);
+  
+  // 列出对象（列出存储桶中的文件列表，支持前缀过滤、分页、排序）
+  rpc ListObjects(ListObjectsRequest) returns (ListObjectsResponse);
+  
+  // 生成上传URL（生成预签名的上传URL，客户端可直接使用该URL上传文件，适用于客户端直传）
+  rpc GenerateUploadUrl(GenerateUploadUrlRequest) returns (GenerateUploadUrlResponse);
+  
+  // 描述存储桶（获取存储桶的配置信息，包括区域、存储类型、版本控制等）
+  rpc DescribeBucket(DescribeBucketRequest) returns (DescribeBucketResponse);
+}

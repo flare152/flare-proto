@@ -10,15 +10,6 @@ pub mod flare {
         }
     }
 
-    pub mod communication_core {
-        pub mod v1 {
-            include!(concat!(
-                env!("OUT_DIR"),
-                "/flare.communication_core.v1.rs"
-            ));
-        }
-    }
-
     pub mod signaling {
         pub mod v1 {
             include!(concat!(env!("OUT_DIR"), "/flare.signaling.v1.rs"));
@@ -48,14 +39,28 @@ pub mod flare {
             include!(concat!(env!("OUT_DIR"), "/flare.hooks.v1.rs"));
         }
     }
+
+    pub mod session {
+        pub mod v1 {
+            include!(concat!(env!("OUT_DIR"), "/flare.session.v1.rs"));
+        }
+    }
+
+    pub mod message {
+        pub mod v1 {
+            include!(concat!(env!("OUT_DIR"), "/flare.message.v1.rs"));
+        }
+    }
+
+    pub mod access_gateway {
+        pub mod v1 {
+            include!(concat!(env!("OUT_DIR"), "/flare.access_gateway.v1.rs"));
+        }
+    }
 }
 
 pub mod common {
     pub use crate::flare::common::v1::*;
-}
-
-pub mod communication_core {
-    pub use crate::flare::communication_core::v1::*;
 }
 
 pub mod signaling {
@@ -78,18 +83,22 @@ pub mod hooks {
     pub use crate::flare::hooks::v1::*;
 }
 
+pub mod session {
+    pub use crate::flare::session::v1::*;
+}
+
+pub mod message {
+    pub use crate::flare::message::v1::*;
+}
+
+pub mod access_gateway {
+    pub use crate::flare::access_gateway::v1::*;
+}
+
 // Re-export commonly used types
 // Note: Using explicit re-exports to avoid ambiguous glob re-exports warnings
 pub use common::{
     AuditContext, MediaAttachment, Pagination, RequestContext, RpcStatus, TenantContext,
-};
-
-pub use communication_core::{
-    GetOnlineStatusRequest, GetOnlineStatusResponse, LoginRequest, LoginResponse, Message,
-    Notification, OnlineStatus, PushFailure, PushMessageRequest, PushMessageResponse,
-    PushNotificationRequest, PushNotificationResponse, PushOptions, QueryMessagesRequest,
-    QueryMessagesResponse, RouteMessageRequest, RouteMessageResponse, StoreMessageRequest,
-    StoreMessageResponse,
 };
 
 pub use signaling::{
@@ -102,33 +111,46 @@ pub use signaling::{
 };
 
 pub use push::{
-    PushMessageRequest as PushPushMessageRequest, PushMessageResponse as PushPushMessageResponse,
-    PushNotificationRequest as PushPushNotificationRequest,
-    PushNotificationResponse as PushPushNotificationResponse,
+    CancelScheduledPushRequest, CancelScheduledPushResponse, CreateTemplateRequest,
+    CreateTemplateResponse, ListTemplatesRequest, ListTemplatesResponse, PushFailure,
+    PushMessageRequest as PushPushMessageRequest,
+    PushMessageResponse as PushPushMessageResponse, PushNotificationRequest as PushPushNotificationRequest,
+    PushNotificationResponse as PushPushNotificationResponse, PushOptions, PushSchedule,
+    PushTemplate, QueryPushStatusRequest, QueryPushStatusResponse, SchedulePushRequest,
+    SchedulePushResponse, UpdateTemplateRequest, UpdateTemplateResponse,
 };
 
 pub use storage::{
-    BatchStoreMessageRequest, BatchStoreMessageResponse, DeleteMessageRequest,
-    DeleteMessageResponse, FailedMessage, QueryMessagesRequest as StorageQueryMessagesRequest,
-    QueryMessagesResponse as StorageQueryMessagesResponse,
+    BatchStoreMessageRequest, BatchStoreMessageResponse, ClearSessionRequest, ClearSessionResponse,
+    DeleteMessageForUserRequest, DeleteMessageForUserResponse, DeleteMessageRequest,
+    DeleteMessageResponse, ExportMessagesRequest, ExportMessagesResponse, FailedMessage,
+    GetMessageRequest as StorageGetMessageRequest, GetMessageResponse as StorageGetMessageResponse,
+    MarkMessageReadRequest, MarkMessageReadResponse, Message, MessageOperation, MessageTimeline,
+    QueryMessagesRequest as StorageQueryMessagesRequest,
+    QueryMessagesResponse as StorageQueryMessagesResponse, RecallMessageRequest,
+    RecallMessageResponse, SearchMessagesRequest, SearchMessagesResponse,
+    SetMessageAttributesRequest, SetMessageAttributesResponse,
     StoreMessageRequest as StorageStoreMessageRequest,
     StoreMessageResponse as StorageStoreMessageResponse,
 };
 
 pub use media::{
-    AbortMultipartUploadRequest, AbortMultipartUploadResponse, CleanupOrphanedAssetsRequest,
-    CleanupOrphanedAssetsResponse, CompleteMultipartUploadRequest, CompressOperation,
-    CreateReferenceRequest, CreateReferenceResponse, DeleteFileRequest as MediaDeleteFileRequest,
-    DeleteFileResponse as MediaDeleteFileResponse, DeleteReferenceRequest, DeleteReferenceResponse,
-    FileInfo, GetFileInfoRequest, GetFileInfoResponse, GetFileUrlRequest, GetFileUrlResponse,
-    ImageOperation, InitiateMultipartUploadRequest, InitiateMultipartUploadResponse,
-    ListReferencesRequest, ListReferencesResponse, MediaReferenceInfo, ProcessImageRequest,
-    ProcessImageResponse, ProcessVideoRequest, ProcessVideoResponse, ResizeOperation,
+    AbortMultipartUploadRequest, AbortMultipartUploadResponse, AccessControlEntry,
+    CleanupOrphanedAssetsRequest, CleanupOrphanedAssetsResponse, CompleteMultipartUploadRequest,
+    CompressOperation, CompressVideoOperation, CreateReferenceRequest, CreateReferenceResponse,
+    DeleteFileRequest as MediaDeleteFileRequest, DeleteFileResponse as MediaDeleteFileResponse,
+    DeleteReferenceRequest, DeleteReferenceResponse, DescribeBucketRequest, DescribeBucketResponse,
+    FileInfo, GenerateUploadUrlRequest, GenerateUploadUrlResponse, GetFileInfoRequest,
+    GetFileInfoResponse, GetFileUrlRequest, GetFileUrlResponse, ImageOperation,
+    InitiateMultipartUploadRequest, InitiateMultipartUploadResponse, ListObjectsRequest,
+    ListObjectsResponse, ListReferencesRequest, ListReferencesResponse, MediaReferenceInfo,
+    ProcessImageRequest, ProcessImageResponse, ProcessVideoRequest, ProcessVideoResponse,
+    ResizeOperation, SetObjectAclRequest, SetObjectAclResponse, SubtitleBurnOperation,
     ThumbnailOperation, UploadFileMetadata, UploadFileRequest, UploadFileResponse,
     UploadMultipartChunkRequest, UploadMultipartChunkResponse, VideoOperation, WatermarkOperation,
 };
 pub use hooks::{
-    DeliveryHookRequest as ProtoDeliveryHookRequest,
+    CustomHookRequest, CustomHookResponse, DeliveryHookRequest as ProtoDeliveryHookRequest,
     DeliveryHookResponse as ProtoDeliveryHookResponse,
     HookDeliveryEvent as ProtoHookDeliveryEvent,
     HookInvocationContext as ProtoHookInvocationContext,
@@ -141,5 +163,30 @@ pub use hooks::{
     RecallHookRequest as ProtoRecallHookRequest,
     RecallHookResponse as ProtoRecallHookResponse,
     HookRecallEvent as ProtoHookRecallEvent,
+    PresenceHookRequest, PresenceHookResponse, SessionLifecycleHookRequest,
+    SessionLifecycleHookResponse,
 };
 pub use hooks::hook_extension_client::HookExtensionClient;
+
+pub use session::{
+    session_service_client::SessionServiceClient,
+    session_service_server::SessionServiceServer,
+    DevicePresence as SessionDevicePresence,
+    DeviceState as SessionDeviceState,
+    ConflictResolution as SessionConflictResolution,
+    ListSessionsRequest as SessionListSessionsRequest,
+    ListSessionsResponse as SessionListSessionsResponse,
+    SessionBootstrapRequest,
+    SessionBootstrapResponse,
+    SessionSummary as SessionSummaryProto,
+    SortOrder as SessionSortOrder,
+    ForceSessionSyncRequest,
+    ForceSessionSyncResponse,
+    SessionPolicy,
+    SyncMessagesRequest as SessionSyncMessagesRequest,
+    SyncMessagesResponse as SessionSyncMessagesResponse,
+    UpdateCursorRequest,
+    UpdateCursorResponse,
+    UpdatePresenceRequest,
+    UpdatePresenceResponse,
+};

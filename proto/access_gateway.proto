@@ -1,0 +1,258 @@
+syntax = "proto3";
+
+package flare.access_gateway.v1;
+
+import "google/protobuf/timestamp.proto";
+import "common/errors.proto";
+import "common/metadata.proto";
+import "storage.proto";
+
+// -----------------------------------------------------------------------------
+// AccessGateway：业务系统推送消息给客户端的接口
+// -----------------------------------------------------------------------------
+// 职责：为业务系统提供推送消息给客户端的 gRPC 接口
+// 依赖：common/errors.proto, common/metadata.proto, storage.proto
+//
+// 使用场景：
+// - 业务系统需要推送消息给在线客户端
+// - 支持单用户推送、批量推送
+// - 支持查询用户连接状态
+//
+
+// -----------------------------------------------------------------------------
+// 推送消息相关消息
+// -----------------------------------------------------------------------------
+
+// 推送消息请求（业务系统调用）
+message PushMessageRequest {
+  flare.common.v1.RequestContext context = 1;
+  flare.common.v1.TenantContext tenant = 2;
+  
+  // 目标用户ID（支持多个用户，批量推送）
+  repeated string target_user_ids = 3;
+  
+  // 消息内容
+  flare.storage.v1.Message message = 4;
+  
+  // 推送选项
+  PushOptions options = 5;
+  
+  // 元数据
+  map<string, string> metadata = 6;
+}
+
+// 推送选项
+message PushOptions {
+  // 是否要求确认（客户端需要回传 ACK）
+  bool require_ack = 1;
+  
+  // 优先级（0-9，数字越大优先级越高）
+  int32 priority = 2;
+  
+  // 过期时间（Unix 时间戳，毫秒）
+  int64 expire_at_ms = 3;
+  
+  // 是否离线推送（如果用户不在线，是否通过第三方推送）
+  bool offline_push = 4;
+  
+  // 设备过滤（只推送给指定设备）
+  repeated string device_ids = 5;
+  
+  // 平台过滤（只推送给指定平台：ios/android/web）
+  repeated string platforms = 6;
+}
+
+// 推送消息响应
+message PushMessageResponse {
+  // 推送结果
+  repeated PushResult results = 1;
+  
+  // 总体状态
+  flare.common.v1.RpcStatus status = 2;
+  
+  // 统计信息
+  PushStatistics statistics = 3;
+}
+
+// 单个用户推送结果
+message PushResult {
+  string user_id = 1;
+  
+  // 推送状态
+  PushStatus status = 2;
+  
+  // 推送成功的连接数
+  int32 success_count = 3;
+  
+  // 推送失败的连接数
+  int32 failure_count = 4;
+  
+  // 错误信息（如果有）
+  string error_message = 5;
+  
+  // 推送时间
+  google.protobuf.Timestamp pushed_at = 6;
+}
+
+// 推送状态
+enum PushStatus {
+  PUSH_STATUS_UNSPECIFIED = 0;
+  PUSH_STATUS_SUCCESS = 1;        // 推送成功
+  PUSH_STATUS_PARTIAL = 2;        // 部分成功（部分设备在线）
+  PUSH_STATUS_USER_OFFLINE = 3;   // 用户不在线
+  PUSH_STATUS_FAILED = 4;         // 推送失败
+}
+
+// 推送统计信息
+message PushStatistics {
+  // 总用户数
+  int32 total_users = 1;
+  
+  // 在线用户数
+  int32 online_users = 2;
+  
+  // 离线用户数
+  int32 offline_users = 3;
+  
+  // 成功推送数
+  int32 success_count = 4;
+  
+  // 失败推送数
+  int32 failure_count = 5;
+}
+
+// -----------------------------------------------------------------------------
+// 批量推送相关消息
+// -----------------------------------------------------------------------------
+
+// 批量推送消息请求
+message BatchPushMessageRequest {
+  flare.common.v1.RequestContext context = 1;
+  flare.common.v1.TenantContext tenant = 2;
+  
+  // 推送任务列表
+  repeated PushMessageRequest pushes = 3;
+  
+  // 批量选项
+  BatchPushOptions options = 4;
+}
+
+// 批量推送选项
+message BatchPushOptions {
+  // 是否并行推送（默认 true）
+  bool parallel = 1;
+  
+  // 最大并发数（默认 100）
+  int32 max_concurrency = 2;
+  
+  // 是否快速失败（遇到错误立即停止，默认 false）
+  bool fail_fast = 3;
+}
+
+// 批量推送消息响应
+message BatchPushMessageResponse {
+  // 批量推送结果
+  repeated PushMessageResponse results = 1;
+  
+  // 总体状态
+  flare.common.v1.RpcStatus status = 2;
+  
+  // 统计信息
+  BatchPushStatistics statistics = 3;
+}
+
+// 批量推送统计信息
+message BatchPushStatistics {
+  // 总任务数
+  int32 total_tasks = 1;
+  
+  // 成功任务数
+  int32 success_tasks = 2;
+  
+  // 失败任务数
+  int32 failure_tasks = 3;
+  
+  // 总用户数
+  int32 total_users = 4;
+  
+  // 成功推送用户数
+  int32 success_users = 5;
+  
+  // 失败推送用户数
+  int32 failure_users = 6;
+}
+
+// -----------------------------------------------------------------------------
+// 连接查询相关消息
+// -----------------------------------------------------------------------------
+
+// 查询用户连接状态请求
+message QueryUserConnectionsRequest {
+  flare.common.v1.RequestContext context = 1;
+  flare.common.v1.TenantContext tenant = 2;
+  
+  // 用户ID列表
+  repeated string user_ids = 3;
+}
+
+// 用户连接信息
+message UserConnectionInfo {
+  string user_id = 1;
+  
+  // 是否在线
+  bool online = 2;
+  
+  // 连接列表
+  repeated ConnectionInfo connections = 3;
+  
+  // 最后活跃时间
+  google.protobuf.Timestamp last_active_at = 4;
+}
+
+// 连接信息
+message ConnectionInfo {
+  string connection_id = 1;
+  
+  // 协议类型（websocket/quic/tcp）
+  string protocol = 2;
+  
+  // 设备ID
+  string device_id = 3;
+  
+  // 平台（ios/android/web）
+  string platform = 4;
+  
+  // 连接时间
+  google.protobuf.Timestamp connected_at = 5;
+  
+  // 最后活跃时间
+  google.protobuf.Timestamp last_active_at = 6;
+}
+
+// 查询用户连接状态响应
+message QueryUserConnectionsResponse {
+  // 用户连接信息列表
+  repeated UserConnectionInfo users = 1;
+  
+  // 状态
+  flare.common.v1.RpcStatus status = 2;
+}
+
+// -----------------------------------------------------------------------------
+// 服务定义
+// -----------------------------------------------------------------------------
+
+service AccessGateway {
+  // 推送消息给客户端（业务系统调用）
+  // 支持单用户或多用户批量推送
+  rpc PushMessage(PushMessageRequest) returns (PushMessageResponse);
+  
+  // 批量推送消息给客户端（业务系统调用）
+  // 支持多个推送任务并行执行
+  rpc BatchPushMessage(BatchPushMessageRequest) returns (BatchPushMessageResponse);
+  
+  // 查询用户连接状态（业务系统调用）
+  // 查询指定用户的连接信息（在线状态、连接数、设备信息等）
+  rpc QueryUserConnections(QueryUserConnectionsRequest) returns (QueryUserConnectionsResponse);
+}
+
