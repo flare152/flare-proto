@@ -107,6 +107,26 @@ message QueryMessagesResponse {
   flare.common.v1.RpcStatus status = 5;
 }
 
+// 基于 seq 的消息查询请求
+message QueryMessagesBySeqRequest {
+  string session_id = 1;
+  int64 after_seq = 2;        // 起始 seq（不包含）
+  int64 before_seq = 3;       // 结束 seq（可选，0 表示不限制）
+  int32 limit = 4;            // 返回消息数量限制
+  string user_id = 5;         // 用户ID（可选，用于过滤已删除消息）
+  flare.common.v1.RequestContext context = 6;
+  flare.common.v1.TenantContext tenant = 7;
+}
+
+// 基于 seq 的消息查询响应
+message QueryMessagesBySeqResponse {
+  repeated flare.common.v1.Message messages = 1;  // 使用 common 中的统一 Message 定义
+  string next_cursor = 2;     // 基于 seq 的游标（格式：seq:{seq}:{message_id}）
+  bool has_more = 3;
+  int64 last_seq = 4;         // 最后一条消息的 seq
+  flare.common.v1.RpcStatus status = 5;
+}
+
 message SearchMessagesRequest {
   flare.common.v1.RequestContext context = 1;
   flare.common.v1.TenantContext tenant = 2;
@@ -265,6 +285,9 @@ message ExportMessagesResponse {
 service StorageReaderService {
   // 查询会话消息（支持时间范围和分页）
   rpc QueryMessages(QueryMessagesRequest) returns (QueryMessagesResponse);
+
+  // 基于 seq 查询会话消息（支持 seq 范围和分页，性能更优）
+  rpc QueryMessagesBySeq(QueryMessagesBySeqRequest) returns (QueryMessagesBySeqResponse);
 
   // 搜索消息（支持复杂过滤和排序）
   rpc SearchMessages(SearchMessagesRequest) returns (SearchMessagesResponse);
