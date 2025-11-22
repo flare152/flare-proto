@@ -5,7 +5,7 @@ package flare.hooks.v1;
 import "google/protobuf/timestamp.proto";
 import "common/errors.proto";
 import "common/metadata.proto";
-import "storage.proto";
+import "common/message.proto";
 import "session.proto";
 
 // -----------------------------------------------------------------------------
@@ -82,7 +82,7 @@ message HookMessageDraft {
 
 // Hook消息记录（PostSend Hook中的消息记录，已持久化）
 message HookMessageRecord {
-  flare.storage.v1.Message message = 1;
+  flare.common.v1.Message message = 1;  // 使用 common 中的统一 Message 定义
   google.protobuf.Timestamp persisted_at = 2;              // 持久化时间
   map<string, string> metadata = 3;
 }

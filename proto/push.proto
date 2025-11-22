@@ -5,6 +5,7 @@ package flare.push.v1;
 import "google/protobuf/timestamp.proto";
 import "common/errors.proto";
 import "common/metadata.proto";
+import "common/message.proto";
 
 // -----------------------------------------------------------------------------
 // 推送服务
@@ -20,7 +21,7 @@ import "common/metadata.proto";
 // 推送消息请求
 message PushMessageRequest {
   repeated string user_ids = 1;                            // 接收者用户ID列表
-  bytes message = 2;                                       // 消息数据（二进制格式）
+  flare.common.v1.Message message = 2;                     // 消息内容（类型安全，包含session_id）
   PushOptions options = 3;                                 // 推送选项（是否仅在线、是否持久化等）
   flare.common.v1.RequestContext context = 4;            // 请求上下文
   flare.common.v1.TenantContext tenant = 5;                // 租户上下文

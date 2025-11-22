@@ -5,7 +5,7 @@ package flare.access_gateway.v1;
 import "google/protobuf/timestamp.proto";
 import "common/errors.proto";
 import "common/metadata.proto";
-import "storage.proto";
+import "common/message.proto";
 
 // -----------------------------------------------------------------------------
 // AccessGateway：业务系统推送消息给客户端的接口
@@ -31,8 +31,8 @@ message PushMessageRequest {
   // 目标用户ID（支持多个用户，批量推送）
   repeated string target_user_ids = 3;
   
-  // 消息内容
-  flare.storage.v1.Message message = 4;
+  // 消息内容（包含session_id，IM核心概念）
+  flare.common.v1.Message message = 4;
   
   // 推送选项
   PushOptions options = 5;

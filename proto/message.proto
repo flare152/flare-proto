@@ -5,7 +5,7 @@ package flare.message.v1;
 import "google/protobuf/timestamp.proto";
 import "common/errors.proto";
 import "common/metadata.proto";
-import "storage.proto";
+import "common/message.proto";
 
 // -----------------------------------------------------------------------------
 // 消息编排服务
@@ -30,7 +30,8 @@ message SendMessageRequest {
   // 消息内容，包含消息类型、内容、元数据等
   // 必需字段，不能为空
   // 消息大小限制：单条消息最大64KB
-  flare.storage.v1.Message message = 2;
+  // 注意：消息必须包含 session_id（IM核心概念）
+  flare.common.v1.Message message = 2;
   
   // 是否同步等待持久化
   // true: 等待消息完全持久化后返回，延迟较高但保证持久化成功
@@ -65,7 +66,7 @@ message SendMessageResponse {
   
   // 消息时间线信息
   // 包含消息的持久化时间、投递时间、已读时间等
-  flare.storage.v1.MessageTimeline timeline = 4;
+  flare.common.v1.MessageTimeline timeline = 4;
   
   // RPC状态，包含错误码和错误信息
   // ERROR_CODE_OK表示成功，其他值表示失败
@@ -127,7 +128,8 @@ message SendSystemMessageRequest {
   
   // 消息内容，包含消息类型、内容、元数据等
   // 必需字段，不能为空
-  flare.storage.v1.Message message = 2;
+  // 注意：消息必须包含 session_id（IM核心概念）
+  flare.common.v1.Message message = 2;
   
   // 系统消息类型
   // 标识系统消息的类型，如 "group_dissolve"（群解散）、"member_quit"（成员退出）
@@ -205,7 +207,7 @@ message QueryMessagesRequest {
 message QueryMessagesResponse {
   // 消息列表
   // 符合条件的消息列表，按时间倒序排列（最新的在前）
-  repeated flare.storage.v1.Message messages = 1;
+  repeated flare.common.v1.Message messages = 1;
   
   // 下一页游标
   // 用于获取下一页数据的游标，空表示没有更多数据
@@ -257,7 +259,7 @@ message SearchMessagesRequest {
 message SearchMessagesResponse {
   // 搜索结果消息列表
   // 符合搜索条件的消息列表，按排序规则排列
-  repeated flare.storage.v1.Message messages = 1;
+  repeated flare.common.v1.Message messages = 1;
   
   // 分页信息
   // 包含分页的详细信息，如总记录数、游标等
@@ -287,7 +289,7 @@ message GetMessageRequest {
 message GetMessageResponse {
   // 消息详情
   // 完整的消息信息，包含消息内容、时间线、状态等
-  flare.storage.v1.Message message = 1;
+  flare.common.v1.Message message = 1;
   
   // RPC状态，包含错误码和错误信息
   flare.common.v1.RpcStatus status = 2;

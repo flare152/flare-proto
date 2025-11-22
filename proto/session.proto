@@ -5,7 +5,8 @@ package flare.session.v1;
 import "google/protobuf/timestamp.proto";
 import "common/errors.proto";
 import "common/metadata.proto";
-import "storage.proto";
+import "common/message.proto";
+import "storage.proto";  // 保留用于 MessageType 枚举（向后兼容）
 
 // -----------------------------------------------------------------------------
 // 会话同步与管理服务
@@ -67,7 +68,7 @@ message SessionSummary {
   string last_message_id = 4;                             // 最后一条消息ID
   google.protobuf.Timestamp last_message_time = 5;        // 最后一条消息时间（RFC3339格式）
   string last_sender_id = 6;                               // 最后发送者ID
-  flare.storage.v1.MessageType last_message_type = 7;     // 最后消息类型
+  flare.common.v1.MessageType last_message_type = 7;     // 最后消息类型（使用 common 中的统一枚举）
   string last_content_type = 8;                            // 最后内容类型
   int32 unread_count = 9;                                  // 未读数
   map<string, string> metadata = 10;                       // 元数据
@@ -143,7 +144,7 @@ message SessionBootstrapRequest {
 
 message SessionBootstrapResponse {
   repeated SessionSummary sessions = 1;
-  repeated flare.storage.v1.Message recent_messages = 2;
+  repeated flare.common.v1.Message recent_messages = 2;  // 使用 common 中的统一 Message 定义
   repeated DevicePresence devices = 3;
   map<string, int64> server_cursor_map = 4;
   SessionPolicy policy = 5;
@@ -180,7 +181,7 @@ message SyncMessagesRequest {
 }
 
 message SyncMessagesResponse {
-  repeated flare.storage.v1.Message messages = 1;
+  repeated flare.common.v1.Message messages = 1;  // 使用 common 中的统一 Message 定义
   string next_cursor = 2;
   int64 server_cursor_ts = 3;
   flare.common.v1.RpcStatus status = 4;

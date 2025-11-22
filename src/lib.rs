@@ -99,6 +99,13 @@ pub mod access_gateway {
 // Note: Using explicit re-exports to avoid ambiguous glob re-exports warnings
 pub use common::{
     AuditContext, MediaAttachment, Pagination, RequestContext, RpcStatus, TenantContext,
+    // 消息相关类型（从 common 模块导出，统一消息定义）
+    Message, MessageContent, MessageType, MessageStatus, MessageSource, ContentType,
+    MessageTimeline, MessageReadRecord, MessageOperation,
+    TextContent, ImageContent, VideoContent, AudioContent, FileContent,
+    LocationContent, CardContent, NotificationContent, CustomContent,
+    ForwardContent, TypingContent, Mention, ImageInfo, VideoInfo, AudioInfo,
+    OfflinePushInfo, VisibilityStatus,
 };
 
 pub use signaling::{
@@ -125,13 +132,14 @@ pub use storage::{
     DeleteMessageForUserRequest, DeleteMessageForUserResponse, DeleteMessageRequest,
     DeleteMessageResponse, ExportMessagesRequest, ExportMessagesResponse, FailedMessage,
     GetMessageRequest as StorageGetMessageRequest, GetMessageResponse as StorageGetMessageResponse,
-    MarkMessageReadRequest, MarkMessageReadResponse, Message, MessageOperation, MessageTimeline,
+    MarkMessageReadRequest, MarkMessageReadResponse,
     QueryMessagesRequest as StorageQueryMessagesRequest,
     QueryMessagesResponse as StorageQueryMessagesResponse, RecallMessageRequest,
     RecallMessageResponse, SearchMessagesRequest, SearchMessagesResponse,
     SetMessageAttributesRequest, SetMessageAttributesResponse,
     StoreMessageRequest as StorageStoreMessageRequest,
     StoreMessageResponse as StorageStoreMessageResponse,
+    // 注意：Message、MessageOperation、MessageTimeline 已迁移到 common 模块
 };
 
 pub use media::{

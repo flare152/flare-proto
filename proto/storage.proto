@@ -5,6 +5,7 @@ package flare.storage.v1;
 import "google/protobuf/timestamp.proto";
 import "common/errors.proto";
 import "common/metadata.proto";
+import "common/message.proto";
 
 // -----------------------------------------------------------------------------
 // 存储查询服务
@@ -40,90 +41,9 @@ enum VisibilityStatus {
 // -----------------------------------------------------------------------------
 // 数据模型
 // -----------------------------------------------------------------------------
-
-// 消息对象（完整的消息信息）
-message Message {
-  string id = 1;                                    // 消息ID（全局唯一，UUID或雪花ID）
-  string session_id = 2;                            // 会话ID（必需）
-  string sender_id = 3;                             // 发送者ID
-  string sender_type = 4;                           // 发送者类型（user/system/bot）
-  repeated string receiver_ids = 5;                  // 接收者ID列表（群聊场景）
-  string receiver_id = 6;                           // 接收者ID（单聊场景）
-  MessageContent content = 7;                       // 消息内容（必需）
-  google.protobuf.Timestamp timestamp = 8;          // 时间戳（RFC3339格式）
-  MessageType message_type = 9;                     // 消息类型
-  string business_type = 10;                        // 业务类型（业务自定义）
-  string session_type = 11;                        // 会话类型（single/group/channel）
-  string status = 12;                               // 消息状态（sent/delivered/read/failed）
-  map<string, string> extra = 13;                   // 扩展字段
-  bool is_recalled = 14;                            // 是否已撤回
-  google.protobuf.Timestamp recalled_at = 15;       // 撤回时间（仅is_recalled=true时有效）
-  bool is_burn_after_read = 16;                     // 是否阅后即焚
-  int32 burn_after_seconds = 17;                    // 阅后即焚秒数（仅is_burn_after_read=true时有效）
-  flare.common.v1.TenantContext tenant = 18;         // 租户上下文
-  repeated flare.common.v1.MediaAttachment attachments = 19; // 媒体附件列表
-  flare.common.v1.AuditContext audit = 20;          // 审计上下文
-  repeated string tags = 21;                        // 标签列表
-  MessageTimeline timeline = 22;                    // 时间线信息
-  map<string, string> attributes = 23;              // 自定义属性
-  repeated MessageReadRecord read_by = 24;          // 已读记录列表
-  map<string, VisibilityStatus> visibility = 25;   // 可见性状态（user_id -> VisibilityStatus）
-  repeated MessageOperation operations = 26;        // 操作记录列表
-}
-
-// 消息时间线（追踪消息生命周期）
-message MessageTimeline {
-  google.protobuf.Timestamp ingestion_time = 1;   // 入库时间（RFC3339格式）
-  google.protobuf.Timestamp persisted_time = 2;   // 持久化时间（RFC3339格式）
-  google.protobuf.Timestamp delivered_time = 3;   // 送达时间（RFC3339格式，仅已送达时有效）
-  google.protobuf.Timestamp read_time = 4;        // 已读时间（RFC3339格式，仅已读时有效）
-}
-
-// 消息内容（支持多种格式）
-message MessageContent {
-  oneof content {
-    TextContent text = 1;      // 文本内容（支持@提及）
-    bytes binary = 2;           // 二进制内容
-    string json = 3;           // JSON内容
-    CustomContent custom = 4;  // 自定义内容
-  }
-}
-
-// 文本内容
-message TextContent {
-  string text = 1;                      // 文本内容（支持富文本）
-  repeated Mention mentions = 2;         // @提及列表
-}
-
-// @提及信息
-message Mention {
-  string user_id = 1;   // 用户ID
-  int32 start = 2;      // 起始位置（字符索引）
-  int32 length = 3;     // 长度（字符数）
-}
-
-// 自定义内容
-message CustomContent {
-  string type = 1;                      // 内容类型（rich_card/interactive_message等）
-  bytes payload = 2;                    // 负载数据（业务自定义格式）
-  map<string, string> metadata = 3;     // 元数据
-}
-
-// 消息已读记录
-message MessageReadRecord {
-  string user_id = 1;                                  // 用户ID
-  google.protobuf.Timestamp read_at = 2;              // 已读时间（RFC3339格式）
-  google.protobuf.Timestamp burned_at = 3;             // 销毁时间（RFC3339格式，仅阅后即焚且已销毁时有效）
-}
-
-// 消息操作记录（用于审计和追踪）
-message MessageOperation {
-  string operation_type = 1;                          // 操作类型（recall/delete/edit/pin等）
-  string operator_id = 2;                             // 操作者ID
-  google.protobuf.Timestamp operated_at = 3;          // 操作时间（RFC3339格式）
-  string target_user_id = 4;                          // 目标用户ID（可选）
-  map<string, string> metadata = 5;                   // 元数据
-}
+// 注意：Message 定义已迁移到 common/message.proto
+// 所有服务统一使用 flare.common.v1.Message
+// 保留以下枚举和辅助消息用于向后兼容
 
 // 失败的消息详情
 message FailedMessage {
@@ -138,7 +58,7 @@ message FailedMessage {
 
 message StoreMessageRequest {
   string session_id = 1;
-  Message message = 2;
+  flare.common.v1.Message message = 2;  // 使用 common 中的统一 Message 定义
   bool sync = 3;
   flare.common.v1.RequestContext context = 4;
   flare.common.v1.TenantContext tenant = 5;
@@ -180,7 +100,7 @@ message QueryMessagesRequest {
 }
 
 message QueryMessagesResponse {
-  repeated Message messages = 1;
+  repeated flare.common.v1.Message messages = 1;  // 使用 common 中的统一 Message 定义
   string next_cursor = 2;
   bool has_more = 3;
   flare.common.v1.Pagination pagination = 4;
@@ -197,7 +117,7 @@ message SearchMessagesRequest {
 }
 
 message SearchMessagesResponse {
-  repeated Message messages = 1;
+  repeated flare.common.v1.Message messages = 1;  // 使用 common 中的统一 Message 定义
   flare.common.v1.Pagination pagination = 2;
   flare.common.v1.RpcStatus status = 3;
 }
@@ -209,7 +129,7 @@ message GetMessageRequest {
 }
 
 message GetMessageResponse {
-  Message message = 1;
+  flare.common.v1.Message message = 1;  // 使用 common 中的统一 Message 定义
   flare.common.v1.RpcStatus status = 2;
 }
 

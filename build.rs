@@ -6,6 +6,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &[
                 "proto/common/errors.proto",
                 "proto/common/metadata.proto",
+                "proto/common/message.proto",  // 新增：统一消息定义
                 "proto/signaling.proto",
                 "proto/push.proto",
                 "proto/storage.proto",
