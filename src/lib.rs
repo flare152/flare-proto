@@ -174,8 +174,10 @@ pub use hooks::{
     PresenceHookRequest, PresenceHookResponse, SessionLifecycleHookRequest,
     SessionLifecycleHookResponse,
 };
+#[cfg(not(target_arch = "wasm32"))]
 pub use hooks::hook_extension_client::HookExtensionClient;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub use session::{
     session_service_client::SessionServiceClient,
     session_service_server::SessionServiceServer,

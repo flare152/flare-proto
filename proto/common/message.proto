@@ -40,6 +40,10 @@ enum MessageType {
   MESSAGE_TYPE_RECALL = 11;     // 撤回消息
   MESSAGE_TYPE_READ = 12;       // 已读消息
   MESSAGE_TYPE_FORWARD = 13;    // 转发消息
+  MESSAGE_TYPE_VOTE = 14;       // 投票消息
+  MESSAGE_TYPE_TASK = 15;       // 任务消息
+  MESSAGE_TYPE_SCHEDULE = 16;   // 日程消息
+  MESSAGE_TYPE_ANNOUNCEMENT = 17; // 群公告消息
 }
 
 // 消息状态枚举（基于drawio中的status字段）
@@ -92,11 +96,16 @@ message MessageContent {
     AudioContent audio = 4;             // 语音消息内容（SoundElem）
     FileContent file = 5;               // 文件消息内容（FileElem）
     LocationContent location = 6;       // 位置消息内容（LocationElem）
-    CardContent card = 7;               // 名片消息内容（CardElem）
+    CardContent card = 7;              // 名片消息内容（CardElem）
     NotificationContent notification = 8; // 通知消息内容（NotificationElem）
     CustomContent custom = 9;          // 自定义消息内容（CustomElem）
     ForwardContent forward = 10;        // 转发消息内容（功能消息）
     TypingContent typing = 11;          // 正在输入内容（功能消息）
+    VoteContent vote = 12;              // 投票消息内容
+    TaskContent task = 13;              // 任务消息内容
+    ScheduleContent schedule = 14;      // 日程消息内容
+    AnnouncementContent announcement = 15; // 群公告消息内容
+    SystemEventContent system_event = 16;  // 系统事件消息内容（撤回提示/已读回执等）
   }
 }
 
@@ -343,4 +352,80 @@ message MessageOperation {
   google.protobuf.Timestamp operated_at = 3;          // 操作时间（RFC3339格式）
   string target_user_id = 4;                          // 目标用户ID（可选）
   map<string, string> metadata = 5;                   // 元数据
+}
+message VoteContent {
+  string title = 1;
+  repeated string options = 2;
+  bool multi_select = 3;
+  google.protobuf.Timestamp deadline = 4;
+  map<string, int32> votes = 5; // user_id -> option_index
+}
+
+message TaskContent {
+  string title = 1;
+  string description = 2;
+  repeated string assignees = 3; // user_ids
+  google.protobuf.Timestamp due_date = 4;
+  string status = 5; // open/in_progress/done/cancelled
+}
+
+message ScheduleContent {
+  string title = 1;
+  google.protobuf.Timestamp start_time = 2;
+  google.protobuf.Timestamp end_time = 3;
+  string location = 4;
+  repeated string attendees = 5; // user_ids
+}
+
+message AnnouncementContent {
+  string title = 1;
+  string body = 2;
+  string priority = 3; // normal/high/urgent
+  bool pinned = 4;
+}
+
+message SystemEventContent {
+  string event_type = 1; // recall_notice/read_receipt/kickout/etc
+  map<string, string> data = 2;
+}
+
+message MessageHeader {
+  string id = 1;
+  string session_id = 2;
+  string client_msg_id = 3;
+  string sender_id = 4;
+  int64 seq = 5;
+  google.protobuf.Timestamp timestamp = 6;
+  string session_type = 7; // single/group/channel
+  string business_type = 8;
+}
+
+message MessageBody {
+  MessageContent content = 1;
+  ContentType content_type = 2;
+  repeated MediaAttachment attachments = 3;
+  map<string, string> extra = 4;
+  map<string, string> attributes = 5;
+}
+
+message MessageStatusMark {
+  MessageStatus status = 1;
+  bool is_recalled = 2;
+  google.protobuf.Timestamp recalled_at = 3;
+  string recall_reason = 4;
+  bool is_burn_after_read = 5;
+  int32 burn_after_seconds = 6;
+  MessageTimeline timeline = 7;
+  map<string, VisibilityStatus> visibility = 8;
+  repeated MessageReadRecord read_by = 9;
+  repeated MessageOperation operations = 10;
+}
+
+message UnifiedMessage {
+  MessageHeader header = 1;
+  MessageBody body = 2;
+  MessageStatusMark status = 3;
+  flare.common.v1.TenantContext tenant = 4;
+  AuditContext audit = 5;
+  repeated string tags = 6;
 }
