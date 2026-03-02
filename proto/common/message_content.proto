@@ -1,0 +1,245 @@
+syntax = "proto3";
+
+package flare.common.v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/any.proto";
+
+// 消息内容类型。仅持久化「用户消息」内容；操作走 Event 流（RECALL/EDIT 等），不在此 oneof。
+// 扩展：自定义消息用 MESSAGE_TYPE_CUSTOM + CustomContent；会话内通知用 NOTIFICATION 或 CustomContent(type=notification)。
+
+enum MessageType {
+  MESSAGE_TYPE_UNSPECIFIED = 0;
+  MESSAGE_TYPE_TEXT = 1;         // 文本（含 @）
+  MESSAGE_TYPE_IMAGE = 2;        // 图片
+  MESSAGE_TYPE_VIDEO = 3;        // 视频
+  MESSAGE_TYPE_AUDIO = 4;        // 语音
+  MESSAGE_TYPE_FILE = 5;         // 文件
+  MESSAGE_TYPE_LOCATION = 6;     // 位置
+  MESSAGE_TYPE_CARD = 7;         // 名片
+  MESSAGE_TYPE_LINK_CARD = 11;   // 链接卡片
+  MESSAGE_TYPE_MERGE_FORWARD = 12; // 合并转发
+  MESSAGE_TYPE_MINI_PROGRAM = 13;  // 小程序
+  MESSAGE_TYPE_THREAD = 14;      // 话题/子区
+  MESSAGE_TYPE_CUSTOM = 100;     // 自定义消息体（CustomContent）
+  MESSAGE_TYPE_NOTIFICATION = 101; // 会话内通知（NotificationContent）
+  MESSAGE_TYPE_VOTE = 102;      // 投票
+  MESSAGE_TYPE_TASK = 103;      // 任务
+  MESSAGE_TYPE_SCHEDULE = 104;  // 日程
+  MESSAGE_TYPE_ANNOUNCEMENT = 105; // 公告
+}
+
+// 消息预览（列表/转发展示）
+message MessagePreview {
+  string message_id = 1;         // 消息 server_id
+  string sender_id = 2;           // 发送者
+  MessageType type = 3;           // 类型
+  string text = 4;                // 纯文本预览
+  google.protobuf.Timestamp time = 5; // 时间
+}
+
+// oneof 字段号与 MessageType 枚举值一一对应，便于校验与路由
+message MessageContent {
+  oneof content {
+    TextContent text = 1;             // MESSAGE_TYPE_TEXT = 1
+    ImageContent image = 2;           // MESSAGE_TYPE_IMAGE = 2
+    VideoContent video = 3;           // MESSAGE_TYPE_VIDEO = 3
+    AudioContent audio = 4;           // MESSAGE_TYPE_AUDIO = 4
+    FileContent file = 5;             // MESSAGE_TYPE_FILE = 5
+    LocationContent location = 6;     // MESSAGE_TYPE_LOCATION = 6
+    CardContent card = 7;             // MESSAGE_TYPE_CARD = 7
+    LinkCardContent link_card = 8;   // MESSAGE_TYPE_LINK_CARD = 11
+    ForwardContent forward = 9;      // MESSAGE_TYPE_MERGE_FORWARD = 12
+    MiniProgramContent mini_program = 10;  // MESSAGE_TYPE_MINI_PROGRAM = 13
+    ThreadContent thread = 11;        // MESSAGE_TYPE_THREAD = 14
+    CustomContent custom = 12;       // MESSAGE_TYPE_CUSTOM = 100
+    NotificationContent notification = 13;  // MESSAGE_TYPE_NOTIFICATION = 101
+    VoteContent vote = 14;           // MESSAGE_TYPE_VOTE = 102
+    TaskContent task = 15;           // MESSAGE_TYPE_TASK = 103
+    ScheduleContent schedule = 16;   // MESSAGE_TYPE_SCHEDULE = 104
+    AnnouncementContent announcement = 17;  // MESSAGE_TYPE_ANNOUNCEMENT = 105
+  }
+}
+
+message TextContent {
+  string text = 1;                // 正文
+  repeated Mention mentions = 2;  // @ 提及列表
+}
+
+enum MentionType {
+  MENTION_TYPE_UNSPECIFIED = 0;
+  MENTION_TYPE_USER = 1;    // @ 单用户
+  MENTION_TYPE_ALL = 2;     // @ 所有人
+  MENTION_TYPE_ROLE = 3;    // @ 角色
+  MENTION_TYPE_MULTI = 4;   // @ 多用户
+}
+
+message Mention {
+  MentionType type = 1;          // 提及类型
+  string user_id = 2;            // 单用户时使用
+  repeated string user_ids = 3;  // 多用户时使用
+  string role_id = 4;            // @ 角色时使用
+  int32 start = 10;              // 起始字符下标
+  int32 length = 11;             // 长度（字符数）
+}
+
+message ImageContent {
+  string image_id = 1;          // 关联媒体资产 ID
+  ImageInfo source = 2;         // 原图
+  ImageInfo thumbnail = 3;      // 缩略图
+  string description = 4;       // 图说/描述
+}
+
+message ImageInfo {
+  string uuid = 1;              // 资源唯一标识
+  string url = 2;               // 访问地址
+  string mime_type = 3;         // MIME 类型
+  int64 size = 4;               // 字节数
+  int32 width = 5;              // 宽（像素）
+  int32 height = 6;             // 高（像素）
+}
+
+message VideoContent {
+  string video_id = 1;          // 关联媒体资产 ID
+  VideoInfo source = 2;         // 原视频
+  ImageInfo cover = 3;          // 封面图
+  string description = 4;      // 描述
+}
+
+message VideoInfo {
+  string uuid = 1;
+  string url = 2;
+  string mime_type = 3;
+  int64 size = 4;               // 字节数
+  int64 duration_ms = 5;        // 时长（毫秒）
+  int32 width = 6;
+  int32 height = 7;
+}
+
+message AudioContent {
+  string audio_id = 1;          // 关联媒体资产 ID
+  AudioInfo source = 2;         // 音频信息
+  string description = 4;       // 描述（如转写摘要）
+}
+
+message AudioInfo {
+  string uuid = 1;
+  string url = 2;
+  string mime_type = 3;
+  int64 size = 4;               // 字节数
+  int64 duration_ms = 5;        // 时长（毫秒）
+}
+
+message FileContent {
+  string file_id = 1;           // 文件 ID
+  string file_name = 2;         // 文件名
+  string mime_type = 3;         // MIME 类型
+  int64 file_size = 4;          // 字节数
+  string url = 5;               // 下载地址
+  string description = 6;       // 描述
+}
+
+message LocationContent {
+  double longitude = 1;         // 经度
+  double latitude = 2;         // 纬度
+  string address = 3;           // 地址文案
+  string description = 4;       // 描述
+  string poi_id = 5;            // POI ID（可选）
+}
+
+message CardContent {
+  string user_id = 1;           // 名片用户 ID
+  string nickname = 2;          // 昵称
+  string avatar_url = 3;        // 头像 URL
+  string description = 4;       // 描述/签名
+  map<string, string> extra = 5; // 扩展
+}
+
+// 引用关系：quoted_message_id 为会话内引用键；预览按需拉取
+message QuoteContent {
+  string quoted_message_id = 1;  // 被引用消息 server_id
+  string quoted_sender_id = 2;
+  string quoted_text_preview = 3; // 引用预览文案
+  optional MessageContent quoted_content = 4; // 按需展开完整内容
+}
+
+message LinkCardContent {
+  string url = 1;               // 链接地址
+  string title = 2;             // 标题
+  string description = 3;       // 描述
+  string thumbnail_url = 4;     // 缩略图 URL
+  string site_name = 5;         // 站点名
+}
+
+message ForwardContent {
+  repeated string message_ids = 1;  // 被转发消息 ID 列表
+  string forward_reason = 2;        // 转发说明/备注
+  repeated MessagePreview forwarded_previews = 3; // 展示用预览
+}
+
+message ThreadContent {
+  string thread_id = 1;         // 话题 ID（通常等于根消息 server_id）
+  string thread_title = 2;      // 话题标题
+  MessageContent root_content = 3; // 话题根消息内容
+  map<string, string> metadata = 4; // 如 thread_status
+}
+
+message MiniProgramContent {
+  string app_id = 1;            // 小程序 app_id
+  string title = 2;             // 标题
+  string page_path = 3;         // 页面路径
+  string thumbnail_url = 4;     // 封面图 URL
+  map<string, string> extra = 5; // 扩展
+}
+
+message VoteContent {
+  string vote_id = 1;           // 投票 ID
+  string title = 2;             // 标题
+  repeated string options = 3;  // 选项列表
+  map<string, string> metadata = 4; // 扩展（如截止时间）
+}
+
+message TaskContent {
+  string task_id = 1;           // 任务 ID
+  string title = 2;              // 标题
+  string status = 3;             // 状态（如 pending / done）
+  map<string, string> metadata = 4; // 扩展
+}
+
+message ScheduleContent {
+  string schedule_id = 1;       // 日程 ID
+  string title = 2;             // 标题
+  google.protobuf.Timestamp start_time = 3;  // 开始时间
+  google.protobuf.Timestamp end_time = 4;   // 结束时间
+  map<string, string> metadata = 5;         // 扩展
+}
+
+message AnnouncementContent {
+  string title = 1;             // 标题
+  string body = 2;               // 正文
+  bool pinned = 3;               // 是否置顶
+  map<string, string> metadata = 4; // 扩展
+}
+
+// 自定义消息体：type + payload + metadata，占会话 seq，可同步；推送扩展用 transport.CustomPushData
+message CustomContent {
+  string type = 1;              // 业务类型（如 order_card、rich_card）
+  bytes payload = 2;             // 序列化业务体
+  string description = 3;       // 展示用描述（列表预览等）
+  map<string, string> metadata = 4; // 扩展
+}
+
+// 会话内通知消息：落库、占 seq；离线/系统级推送用 OfflinePushInfo + CustomPushData
+message NotificationContent {
+  string title = 1;             // 标题
+  string body = 2;              // 正文
+  string notification_type = 3; // 业务类型（如 join_group、recall_tip）
+  map<string, string> data = 4; // 业务数据
+  repeated string target_user_ids = 10; // 目标用户（空则按角色/全员）
+  string target_role_id = 11;   // 目标角色
+  bool notify_all = 12;         // 是否通知全员
+  bool persistent = 20;         // 是否持久化（默认 true）
+  bool show_in_list = 21;       // 是否在会话列表展示
+  bool show_badge = 22;         // 是否增加角标
+  bool play_sound = 23;         // 是否播放提示音
+}

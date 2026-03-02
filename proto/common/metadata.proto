@@ -5,6 +5,12 @@ package flare.common.v1;
 import "google/protobuf/timestamp.proto";
 
 // -----------------------------------------------------------------------------
+// 请求上下文约定（DDD：所有 BC 统一）
+// -----------------------------------------------------------------------------
+// tenant_id、operator_id（actor_id）、request_id 通过 gRPC metadata 传递（x-tenant-id, x-actor-id, x-request-id）。
+// 请求体不重复携带；显式传递仅用于代理/覆盖。长连接在建立时或首包注入，ClientPacket 不重复。
+
+// -----------------------------------------------------------------------------
 // Trace / Actor / Device 信息
 // -----------------------------------------------------------------------------
 
@@ -35,6 +41,15 @@ message ActorContext {
   map<string, string> attributes = 4; // 扩展属性
 }
 
+// 设备优先级枚举（用于多设备推送策略）
+enum DevicePriority {
+  DEVICE_PRIORITY_UNSPECIFIED = 0;
+  DEVICE_PRIORITY_LOW = 1;         // 低优先级（后台/离线）
+  DEVICE_PRIORITY_NORMAL = 2;      // 普通优先级（默认）
+  DEVICE_PRIORITY_HIGH = 3;        // 高优先级（用户当前正在使用的设备）
+  DEVICE_PRIORITY_CRITICAL = 4;    // 关键优先级（强制推送，忽略免打扰）
+}
+
 // 设备上下文（用于设备管理和统计）
 message DeviceContext {
   string device_id = 1;              // 设备ID（必需）
@@ -46,6 +61,24 @@ message DeviceContext {
   string timezone = 7;               // 时区（IANA格式）
   string ip_address = 8;             // IP地址（IPv4/IPv6）
   map<string, string> attributes = 9; // 扩展属性
+  
+  // 【新增】设备优先级（用于多设备推送策略）
+  DevicePriority priority = 10;
+  
+  // 【新增】Token 版本（用于强制下线旧版本客户端）
+  int64 token_version = 11;
+  
+  // 【新增】链接质量指标
+  ConnectionQuality connection_quality = 12;
+}
+
+// 链接质量指标（用于链接质量监控与智能路由）
+message ConnectionQuality {
+  int64 rtt_ms = 1;                  // 往返时延（毫秒）
+  double packet_loss_rate = 2;       // 丢包率（0.0-1.0）
+  int64 last_measure_ts = 3;         // 最后测量时间戳（Unix 毫秒）
+  string network_type = 4;           // 网络类型（wifi/4g/5g/ethernet）
+  int32 signal_strength = 5;         // 信号强度（dBm，移动网络）
 }
 
 // -----------------------------------------------------------------------------

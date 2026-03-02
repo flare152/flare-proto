@@ -11,8 +11,11 @@ pub mod flare {
     }
 
     pub mod signaling {
-        pub mod v1 {
-            include!(concat!(env!("OUT_DIR"), "/flare.signaling.v1.rs"));
+        pub mod online {
+            include!(concat!(env!("OUT_DIR"), "/flare.signaling.online.rs"));
+        }
+        pub mod router {
+            include!(concat!(env!("OUT_DIR"), "/flare.signaling.router.rs"));
         }
     }
 
@@ -40,9 +43,9 @@ pub mod flare {
         }
     }
 
-    pub mod session {
+    pub mod conversation {
         pub mod v1 {
-            include!(concat!(env!("OUT_DIR"), "/flare.session.v1.rs"));
+            include!(concat!(env!("OUT_DIR"), "/flare.conversation.v1.rs"));
         }
     }
 
@@ -63,8 +66,21 @@ pub mod common {
     pub use crate::flare::common::v1::*;
 }
 
+// MessageContent 扩展方法（统一的编码/解码接口）
+pub mod message_content_ext;
+pub use message_content_ext::{MessageContentExt, encode_message_content, decode_message_content};
+
+// Signaling 模块已拆分为 online 和 router 子模块
+// 为了向后兼容，导出 online 模块的类型到 signaling 根目录
 pub mod signaling {
-    pub use crate::flare::signaling::v1::*;
+    pub mod online {
+        pub use crate::flare::signaling::online::*;
+    }
+    pub mod router {
+        pub use crate::flare::signaling::router::*;
+    }
+    // 向后兼容：默认导出 online 模块的类型
+    pub use crate::flare::signaling::online::*;
 }
 
 pub mod push {
@@ -83,8 +99,8 @@ pub mod hooks {
     pub use crate::flare::hooks::v1::*;
 }
 
-pub mod session {
-    pub use crate::flare::session::v1::*;
+pub mod conversation {
+    pub use crate::flare::conversation::v1::*;
 }
 
 pub mod message {
@@ -101,20 +117,38 @@ pub use common::{
     AuditContext, MediaAttachment, Pagination, RequestContext, RpcStatus, TenantContext,
     // 消息相关类型（从 common 模块导出，统一消息定义）
     Message, MessageContent, MessageType, MessageStatus, MessageSource, ContentType,
-    MessageTimeline, MessageReadRecord, MessageOperation,
+    DeleteType, MarkType, ReactionAction,
+    MessageTimeline, MessageReadRecord,
     TextContent, ImageContent, VideoContent, AudioContent, FileContent,
     LocationContent, CardContent, NotificationContent, CustomContent,
-    ForwardContent, TypingContent, Mention, ImageInfo, VideoInfo, AudioInfo,
+    ForwardContent, Mention, ImageInfo, VideoInfo, AudioInfo,
     OfflinePushInfo, VisibilityStatus,
+    // 连接质量相关
+    ConnectionQuality,
 };
 
-pub use signaling::{
+pub use signaling::online::{
     GetOnlineStatusRequest as SignalingGetOnlineStatusRequest,
-    GetOnlineStatusResponse as SignalingGetOnlineStatusResponse, HeartbeatRequest,
-    HeartbeatResponse, LoginRequest as SignalingLoginRequest,
-    LoginResponse as SignalingLoginResponse, LogoutRequest, LogoutResponse,
-    RouteMessageRequest as SignalingRouteMessageRequest,
-    RouteMessageResponse as SignalingRouteMessageResponse,
+    GetOnlineStatusResponse as SignalingGetOnlineStatusResponse,
+    HeartbeatRequest,
+    HeartbeatResponse,
+    LoginRequest as SignalingLoginRequest,
+    LoginResponse as SignalingLoginResponse,
+    LogoutRequest,
+    LogoutResponse,
+    DeviceInfo,
+    UserPresence,
+};
+
+pub use signaling::router::{
+    SelectPushTargetsRequest,
+    SelectPushTargetsResponse,
+    GetDeviceRouteRequest,
+    GetDeviceRouteResponse,
+    BatchGetDeviceRoutesRequest,
+    BatchGetDeviceRoutesResponse,
+    RouteTarget,
+    PushStrategy,
 };
 
 pub use push::{
@@ -128,18 +162,10 @@ pub use push::{
 };
 
 pub use storage::{
-    BatchStoreMessageRequest, BatchStoreMessageResponse, ClearSessionRequest, ClearSessionResponse,
-    DeleteMessageForUserRequest, DeleteMessageForUserResponse, DeleteMessageRequest,
-    DeleteMessageResponse, ExportMessagesRequest, ExportMessagesResponse, FailedMessage,
+    ExportMessagesRequest, ExportMessagesResponse, FailedMessage,
     GetMessageRequest as StorageGetMessageRequest, GetMessageResponse as StorageGetMessageResponse,
-    MarkMessageReadRequest, MarkMessageReadResponse,
     QueryMessagesRequest as StorageQueryMessagesRequest,
-    QueryMessagesResponse as StorageQueryMessagesResponse, RecallMessageRequest,
-    RecallMessageResponse, SearchMessagesRequest, SearchMessagesResponse,
-    SetMessageAttributesRequest, SetMessageAttributesResponse,
-    StoreMessageRequest as StorageStoreMessageRequest,
-    StoreMessageResponse as StorageStoreMessageResponse,
-    // 注意：Message、MessageOperation、MessageTimeline 已迁移到 common 模块
+    QueryMessagesResponse as StorageQueryMessagesResponse, SearchMessagesRequest, SearchMessagesResponse,
 };
 
 pub use media::{
@@ -171,32 +197,36 @@ pub use hooks::{
     RecallHookRequest as ProtoRecallHookRequest,
     RecallHookResponse as ProtoRecallHookResponse,
     HookRecallEvent as ProtoHookRecallEvent,
-    PresenceHookRequest, PresenceHookResponse, SessionLifecycleHookRequest,
-    SessionLifecycleHookResponse,
+    PresenceHookRequest, PresenceHookResponse,     ConversationLifecycleHookRequest,
+    ConversationLifecycleHookResponse,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use hooks::hook_extension_client::HookExtensionClient;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use session::{
-    session_service_client::SessionServiceClient,
-    session_service_server::SessionServiceServer,
-    DevicePresence as SessionDevicePresence,
-    DeviceState as SessionDeviceState,
-    ConflictResolution as SessionConflictResolution,
-    ListSessionsRequest as SessionListSessionsRequest,
-    ListSessionsResponse as SessionListSessionsResponse,
-    SessionBootstrapRequest,
-    SessionBootstrapResponse,
-    SessionSummary as SessionSummaryProto,
-    SortOrder as SessionSortOrder,
-    ForceSessionSyncRequest,
-    ForceSessionSyncResponse,
-    SessionPolicy,
-    SyncMessagesRequest as SessionSyncMessagesRequest,
-    SyncMessagesResponse as SessionSyncMessagesResponse,
+pub use conversation::{
+    conversation_service_client::ConversationServiceClient,
+    conversation_service_server::ConversationServiceServer,
+    DevicePresence as ConversationDevicePresence,
+    ListConversationsRequest as ConversationListConversationsRequest,
+    ListConversationsResponse as ConversationListConversationsResponse,
+    ConversationBootstrapRequest,
+    ConversationBootstrapResponse,
+    SortOrder as ConversationSortOrder,
+    ForceConversationSyncRequest,
+    ForceConversationSyncResponse,
+    ConversationPolicy,
+    SyncMessagesRequest as ConversationSyncMessagesRequest,
+    SyncMessagesResponse as ConversationSyncMessagesResponse,
     UpdateCursorRequest,
     UpdateCursorResponse,
     UpdatePresenceRequest,
     UpdatePresenceResponse,
+};
+
+// 这些类型现在在 common 模块中定义，重新导出使用一致的别名
+pub use common::{
+    DeviceState as ConversationDeviceState,
+    ConflictResolution as ConversationConflictResolution,
+    ConversationSummary as ConversationSummaryProto,
 };

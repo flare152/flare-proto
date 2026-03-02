@@ -3,16 +3,12 @@ syntax = "proto3";
 package flare.push.v1;
 
 import "google/protobuf/timestamp.proto";
+import "common/ack.proto";
 import "common/errors.proto";
 import "common/metadata.proto";
 import "common/message.proto";
 
-// -----------------------------------------------------------------------------
-// 推送服务
-// -----------------------------------------------------------------------------
-// 职责：消息推送、通知推送、模板管理等核心能力
-// 依赖：Push Worker、第三方推送服务（APNS、FCM等）
-//
+// 推送服务。约定：tenant_id、request_id 由 metadata 注入（见 common/metadata.proto）。
 
 // -----------------------------------------------------------------------------
 // 推送相关消息
@@ -21,12 +17,10 @@ import "common/message.proto";
 // 推送消息请求
 message PushMessageRequest {
   repeated string user_ids = 1;                            // 接收者用户ID列表
-  flare.common.v1.Message message = 2;                     // 消息内容（类型安全，包含session_id）
+  flare.common.v1.Message message = 2;                     // 消息内容（类型安全，包含conversation_id）
   PushOptions options = 3;                                 // 推送选项（是否仅在线、是否持久化等）
-  flare.common.v1.RequestContext context = 4;            // 请求上下文
-  flare.common.v1.TenantContext tenant = 5;                // 租户上下文
-  string template_id = 6;                                  // 模板ID（使用预定义模板）
-  map<string, string> template_data = 7;                  // 模板数据（用于模板变量替换）
+  string template_id = 4;                                  // 模板ID（使用预定义模板）
+  map<string, string> template_data = 5;                  // 模板数据（用于模板变量替换）
 }
 
 // 推送消息响应
@@ -44,10 +38,8 @@ message PushNotificationRequest {
   repeated string user_ids = 1;                            // 接收者用户ID列表
   Notification notification = 2;                           // 通知内容（标题、内容、图标等）
   PushOptions options = 3;                                // 推送选项（渠道、优先级、静音策略等）
-  flare.common.v1.RequestContext context = 4;            // 请求上下文
-  flare.common.v1.TenantContext tenant = 5;                // 租户上下文
-  string template_id = 6;                                  // 模板ID（使用预定义模板）
-  map<string, string> template_data = 7;                 // 模板数据（用于模板变量替换）
+  string template_id = 4;                                  // 模板ID（使用预定义模板）
+  map<string, string> template_data = 5;                 // 模板数据（用于模板变量替换）
 }
 
 // 推送通知响应
@@ -106,8 +98,6 @@ message PushTemplate {
 }
 
 message CreateTemplateRequest {
-  flare.common.v1.RequestContext context = 1;
-  flare.common.v1.TenantContext tenant = 2;
   PushTemplate template = 3;
 }
 
@@ -117,8 +107,6 @@ message CreateTemplateResponse {
 }
 
 message UpdateTemplateRequest {
-  flare.common.v1.RequestContext context = 1;
-  flare.common.v1.TenantContext tenant = 2;
   PushTemplate template = 3;
 }
 
@@ -128,8 +116,6 @@ message UpdateTemplateResponse {
 }
 
 message DeleteTemplateRequest {
-  flare.common.v1.RequestContext context = 1;
-  flare.common.v1.TenantContext tenant = 2;
   string template_id = 3;
 }
 
@@ -138,8 +124,6 @@ message DeleteTemplateResponse {
 }
 
 message ListTemplatesRequest {
-  flare.common.v1.RequestContext context = 1;
-  flare.common.v1.TenantContext tenant = 2;
   flare.common.v1.Pagination pagination = 3;
   repeated flare.common.v1.FilterExpression filters = 4;
   repeated flare.common.v1.SortExpression sort = 5;
@@ -165,8 +149,6 @@ message PushSchedule {
 }
 
 message SchedulePushRequest {
-  flare.common.v1.RequestContext context = 1;
-  flare.common.v1.TenantContext tenant = 2;
   PushNotificationRequest notification = 3;
   PushSchedule schedule = 4;
 }
@@ -177,8 +159,6 @@ message SchedulePushResponse {
 }
 
 message CancelScheduledPushRequest {
-  flare.common.v1.RequestContext context = 1;
-  flare.common.v1.TenantContext tenant = 2;
   string schedule_id = 3;
 }
 
@@ -187,8 +167,6 @@ message CancelScheduledPushResponse {
 }
 
 message QueryPushStatusRequest {
-  flare.common.v1.RequestContext context = 1;
-  flare.common.v1.TenantContext tenant = 2;
   string task_id = 3;
 }
 
@@ -199,6 +177,26 @@ message QueryPushStatusResponse {
   int32 fail_count = 4;                                    // 失败数量
   repeated PushFailure failures = 5;                        // 失败详情列表
   flare.common.v1.RpcStatus rpc_status = 6;
+}
+
+// -----------------------------------------------------------------------------
+// ACK 相关消息
+// -----------------------------------------------------------------------------
+
+// 推送ACK请求（从 Access Gateway 接收客户端ACK）
+message PushAckRequest {
+  repeated string target_user_ids = 3;                     // 目标用户ID列表
+  flare.common.v1.SendEnvelopeAck ack = 4;                 // 客户端ACK
+  map<string, string> metadata = 5;                         // 扩展元数据
+  string request_id = 6;                                    // 请求ID
+}
+
+// 推送ACK响应
+message PushAckResponse {
+  int32 success_count = 1;                                 // 成功确认数量
+  int32 fail_count = 2;                                    // 失败数量
+  repeated string failed_user_ids = 3;                       // 失败的用户ID列表
+  flare.common.v1.RpcStatus status = 4;
 }
 
 // -----------------------------------------------------------------------------
@@ -232,4 +230,7 @@ service PushService {
   
   // 查询推送状态（根据任务ID查询推送任务的执行状态和结果）
   rpc QueryPushStatus(QueryPushStatusRequest) returns (QueryPushStatusResponse);
+
+  // 接收客户端ACK（从 Access Gateway 接收客户端确认，用于停止重试）
+  rpc PushAck(PushAckRequest) returns (PushAckResponse);
 }

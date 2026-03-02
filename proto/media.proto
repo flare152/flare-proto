@@ -6,12 +6,7 @@ import "google/protobuf/timestamp.proto";
 import "common/errors.proto";
 import "common/metadata.proto";
 
-// -----------------------------------------------------------------------------
-// 媒体服务
-// -----------------------------------------------------------------------------
-// 职责：文件上传、下载、处理、引用管理等核心能力
-// 依赖：对象存储（MinIO/S3）、CDN（可选）
-//
+// 媒体服务。约定：tenant_id、request_id 由 metadata 注入（见 common/metadata.proto）。
 
 // -----------------------------------------------------------------------------
 // 枚举定义
@@ -49,7 +44,7 @@ message FileInfo {
   string cdn_url = 6;
   google.protobuf.Timestamp created_at = 7;
   map<string, string> metadata = 8;
-  flare.common.v1.TenantContext tenant = 9;
+
   uint64 reference_count = 10;
   string status = 11;
   string sha256 = 12;
@@ -57,6 +52,7 @@ message FileInfo {
   google.protobuf.Timestamp grace_expires_at = 14;
   string bucket = 15;
   string object_key = 16;
+  string tenant = 17; // 租户ID
 }
 
 message MediaReferenceInfo {
@@ -93,8 +89,6 @@ message UploadFileMetadata {
   int64 file_size = 3;
   FileType file_type = 4;
   string upload_id = 5;                // 客户端生成
-  flare.common.v1.RequestContext context = 6;
-  flare.common.v1.TenantContext tenant = 7;
   map<string, string> metadata = 8;
   string user_id = 9;
   string trace_id = 10;
@@ -119,8 +113,6 @@ message UploadFileResponse {
 message InitiateMultipartUploadRequest {
   UploadFileMetadata metadata = 1;
   int64 desired_chunk_size = 2;
-  flare.common.v1.RequestContext context = 3;
-  flare.common.v1.TenantContext tenant = 4;
 }
 
 message InitiateMultipartUploadResponse {
@@ -136,7 +128,7 @@ message UploadMultipartChunkRequest {
   string upload_id = 1;
   uint32 chunk_index = 2;
   bytes payload = 3;
-  flare.common.v1.RequestContext context = 4;
+
 }
 
 message UploadMultipartChunkResponse {
@@ -151,13 +143,10 @@ message UploadMultipartChunkResponse {
 
 message CompleteMultipartUploadRequest {
   string upload_id = 1;
-  flare.common.v1.RequestContext context = 2;
-  flare.common.v1.TenantContext tenant = 3;
 }
 
 message AbortMultipartUploadRequest {
   string upload_id = 1;
-  flare.common.v1.RequestContext context = 2;
 }
 
 message AbortMultipartUploadResponse {
@@ -176,8 +165,7 @@ message CreateReferenceRequest {
   string owner_id = 3;
   string business_tag = 4;
   map<string, string> metadata = 5;
-  flare.common.v1.RequestContext context = 6;
-  flare.common.v1.TenantContext tenant = 7;
+
   string display_name = 8;
   string description = 9;
 }
@@ -192,8 +180,6 @@ message CreateReferenceResponse {
 message DeleteReferenceRequest {
   string file_id = 1;
   string reference_id = 2;
-  flare.common.v1.RequestContext context = 3;
-  flare.common.v1.TenantContext tenant = 4;
 }
 
 message DeleteReferenceResponse {
@@ -206,8 +192,6 @@ message DeleteReferenceResponse {
 message ListReferencesRequest {
   string file_id = 1;
   flare.common.v1.Pagination pagination = 2;
-  flare.common.v1.RequestContext context = 3;
-  flare.common.v1.TenantContext tenant = 4;
   repeated flare.common.v1.FilterExpression filters = 5;
   repeated flare.common.v1.SortExpression sort = 6;
 }
@@ -222,8 +206,6 @@ message ListReferencesResponse {
 
 message CleanupOrphanedAssetsRequest {
   uint32 limit = 1;
-  flare.common.v1.RequestContext context = 2;
-  flare.common.v1.TenantContext tenant = 3;
   bool dry_run = 4;
 }
 
@@ -243,8 +225,6 @@ message CleanupOrphanedAssetsResponse {
 message GetFileUrlRequest {
   string file_id = 1;
   int32 expires_in = 2;                // 过期时间(秒)，默认 3600
-  flare.common.v1.RequestContext context = 3;
-  flare.common.v1.TenantContext tenant = 4;
   bool download = 5;
   map<string, string> response_headers = 6;
 }
@@ -262,8 +242,6 @@ message GetFileUrlResponse {
 // 获取文件信息请求
 message GetFileInfoRequest {
   string file_id = 1;
-  flare.common.v1.RequestContext context = 2;
-  flare.common.v1.TenantContext tenant = 3;
 }
 
 // 获取文件信息响应
@@ -277,8 +255,6 @@ message GetFileInfoResponse {
 // 删除文件请求
 message DeleteFileRequest {
   string file_id = 1;
-  flare.common.v1.RequestContext context = 2;
-  flare.common.v1.TenantContext tenant = 3;
   bool hard_delete = 4;
 }
 
@@ -297,8 +273,6 @@ message DeleteFileResponse {
 message ProcessImageRequest {
   string file_id = 1;
   repeated ImageOperation operations = 2;
-  flare.common.v1.RequestContext context = 3;
-  flare.common.v1.TenantContext tenant = 4;
   string target_bucket = 5;
   string output_prefix = 6;
 }
@@ -349,8 +323,7 @@ message ProcessImageResponse {
 message ProcessVideoRequest {
   string file_id = 1;
   repeated VideoOperation operations = 2;
-  flare.common.v1.RequestContext context = 3;
-  flare.common.v1.TenantContext tenant = 4;
+
   string target_bucket = 5;
   string output_prefix = 6;
 }
@@ -401,8 +374,7 @@ message ProcessVideoResponse {
 
 message SetObjectAclRequest {
   string file_id = 1;
-  flare.common.v1.RequestContext context = 2;
-  flare.common.v1.TenantContext tenant = 3;
+
   repeated AccessControlEntry entries = 4;
 }
 
@@ -411,8 +383,6 @@ message SetObjectAclResponse {
 }
 
 message ListObjectsRequest {
-  flare.common.v1.RequestContext context = 1;
-  flare.common.v1.TenantContext tenant = 2;
   string bucket = 3;
   string prefix = 4;
   flare.common.v1.Pagination pagination = 5;
@@ -427,8 +397,6 @@ message ListObjectsResponse {
 }
 
 message GenerateUploadUrlRequest {
-  flare.common.v1.RequestContext context = 1;
-  flare.common.v1.TenantContext tenant = 2;
   string bucket = 3;
   string object_key = 4;
   string mime_type = 5;
@@ -443,8 +411,7 @@ message GenerateUploadUrlResponse {
 }
 
 message DescribeBucketRequest {
-  flare.common.v1.RequestContext context = 1;
-  flare.common.v1.TenantContext tenant = 2;
+
   string bucket = 3;
 }
 

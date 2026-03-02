@@ -1,0 +1,72 @@
+syntax = "proto3";
+
+package flare.common.v1;
+
+import "google/protobuf/timestamp.proto";
+import "common/enums.proto";
+import "common/message_content.proto";
+
+enum ThreadStatus {
+  THREAD_STATUS_UNSPECIFIED = 0;
+  THREAD_STATUS_ACTIVE = 1;   // 活跃
+  THREAD_STATUS_ARCHIVED = 2; // 已归档
+  THREAD_STATUS_LOCKED = 3;   // 已锁定
+}
+
+message ThreadInfo {
+  string thread_id = 1;       // 话题ID（等于根消息ID）
+  string conversation_id = 2;
+  string root_message_id = 3;
+  string title = 4;
+  int32 reply_count = 5;      // 回复数（可查询聚合）
+  google.protobuf.Timestamp last_reply_at = 6;
+  repeated string participants = 7; // 参与者（可查询聚合）
+  ThreadStatus status = 8;
+  google.protobuf.Timestamp created_at = 9;
+  google.protobuf.Timestamp updated_at = 10;
+}
+
+message PinnedMessageInfo {
+  string message_id = 1;
+  string conversation_id = 2;
+  string pinned_by = 3;       // 置顶操作者
+  google.protobuf.Timestamp pinned_at = 4;
+  google.protobuf.Timestamp expire_at = 5; // 可选
+  string reason = 6;
+}
+
+message MarkedMessageInfo {
+  string message_id = 1;
+  string user_id = 2;
+  string conversation_id = 3;
+  flare.common.v1.MarkType mark_type = 4;
+  string color = 5;           // 可选
+  google.protobuf.Timestamp marked_at = 6;
+}
+
+// 编辑历史：不随 Message 同步，由 GetMessageEditHistory 按需返回；Message 仅保留 current_edit_version / last_edited_at。
+message EditHistory {
+  int32 edit_version = 1;      // 从 1 递增
+  MessageContent content = 2;  // 该版本内容
+  google.protobuf.Timestamp edited_at = 3;
+  string editor_id = 4;
+  string reason = 5;
+  bool show_edited_mark = 6;  // 是否显示「已编辑」
+}
+
+// 反应：不随 Message 同步，由 GetMessageReactions 按需返回；大群可只返回汇总（emoji→count）。
+message Reaction {
+  string emoji = 1;           // 如 👍、❤️
+  repeated string user_ids = 2;
+  int32 count = 3;            // 冗余，等于 user_ids 长度
+  google.protobuf.Timestamp last_updated = 4;
+  google.protobuf.Timestamp created_at = 5;
+}
+
+message OfflinePushInfo {
+  string title = 1;           // 推送标题
+  string desc = 2;            // 推送内容
+  string ios_push_sound = 3;  // iOS 铃声
+  bool ios_badge_count = 4;   // 是否增加角标
+  string signal_info = 5;     // 签名等
+}

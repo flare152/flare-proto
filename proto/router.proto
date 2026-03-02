@@ -1,0 +1,220 @@
+syntax = "proto3";
+
+package flare.signaling.router;
+
+option go_package = "github.com/flare-labs/flare/proto/signaling/router;router";
+
+import "common/metadata.proto";
+import "common/errors.proto";
+import "common/event.proto";
+
+// Router 服务（路由决策）。约定：tenant_id 由 metadata 注入（见 common/metadata.proto）。
+service RouterService {
+  // 选择推送目标设备（根据推送策略选择最优设备）
+  rpc SelectPushTargets(SelectPushTargetsRequest) returns (SelectPushTargetsResponse);
+  
+  // 获取设备路由信息（获取设备连接的 Gateway/Server）
+  rpc GetDeviceRoute(GetDeviceRouteRequest) returns (GetDeviceRouteResponse);
+  
+  // 批量获取设备路由信息
+  rpc BatchGetDeviceRoutes(BatchGetDeviceRoutesRequest) returns (BatchGetDeviceRoutesResponse);
+  
+  // 路由消息到业务系统（根据 SVID 路由到对应的业务服务）
+  // Gateway 调用此接口将客户端消息路由到对应的业务系统（如 message-orchestrator）
+  rpc RouteMessage(RouteMessageRequest) returns (RouteMessageResponse);
+
+  // 路由操作事件到业务系统（撤回/编辑/标记等，与 message_event_flow 一致：经 Route 顺序/流控/权限后再到 Orchestrator ExecuteEvent）
+  rpc RouteEvent(RouteEventRequest) returns (RouteEventResponse);
+}
+
+// ==================== 推送策略选择 ====================
+
+// 推送策略枚举
+enum PushStrategy {
+  PUSH_STRATEGY_UNSPECIFIED = 0;
+  PUSH_STRATEGY_ALL_DEVICES = 1;        // 所有在线设备
+  PUSH_STRATEGY_BEST_DEVICE = 2;        // 最优单设备（优先级+质量）
+  PUSH_STRATEGY_ACTIVE_DEVICES = 3;     // 活跃设备（排除Low优先级）
+  PUSH_STRATEGY_PRIMARY_DEVICE = 4;     // 主设备（优先级最高）
+}
+
+// 选择推送目标请求
+message SelectPushTargetsRequest {
+  string user_id = 1;                   // 目标用户ID
+  PushStrategy strategy = 2;            // 推送策略
+
+}
+
+// 选择推送目标响应
+message SelectPushTargetsResponse {
+  repeated RouteTarget targets = 1;     // 推送目标列表
+  flare.common.v1.RpcStatus status = 2;
+}
+
+// 路由目标（推送所需的路由信息）
+message RouteTarget {
+  string user_id = 1;
+  string device_id = 2;
+  string device_platform = 3;           // ios/android/web/pc
+  string gateway_id = 4;                // 设备所在 Gateway
+  string server_id = 5;                 // Gateway 所在 Server
+  flare.common.v1.DevicePriority priority = 6;
+  double quality_score = 7;             // 0-100
+}
+
+// ==================== 设备路由查询 ====================
+
+// 获取设备路由请求
+message GetDeviceRouteRequest {
+  string user_id = 1;
+  string device_id = 2;
+
+}
+
+// 获取设备路由响应
+message GetDeviceRouteResponse {
+  RouteTarget route = 1;
+  flare.common.v1.RpcStatus status = 2;
+}
+
+// 批量获取设备路由请求
+message BatchGetDeviceRoutesRequest {
+  repeated DeviceIdentifier devices = 1;
+
+}
+
+message DeviceIdentifier {
+  string user_id = 1;
+  string device_id = 2;
+}
+
+// 批量获取设备路由响应
+message BatchGetDeviceRoutesResponse {
+  map<string, RouteTarget> routes = 1;  // key: "user_id:device_id"
+  flare.common.v1.RpcStatus status = 2;
+}
+
+// ==================== 消息路由 ====================
+
+// 路由消息请求（Gateway 调用 Route 服务路由消息）
+//
+// 设计原则：
+// - Gateway 负责客户端连接管理和认证
+// - Route 服务负责根据 SVID 路由到业务系统
+// - 支持追踪信息传播，实现全链路追踪
+// - 支持超时和重试配置
+message RouteMessageRequest {
+  // 业务系统标识符（SVID），如 "svid.im"、"svid.customer" 等
+  // 必需字段，Route 服务根据 SVID 路由到对应的业务系统
+  // 默认值：svid.im（IM消息系统）
+  string svid = 1;
+  
+  // 消息负载（protobuf 编码的 SendMessageRequest 中的 Message 对象）
+  // 必需字段，包含完整的消息内容
+  // 注意：这是 SendMessageRequest.message 字段的 protobuf 编码
+  bytes payload = 2;
+  
+  // 路由选项（可选，用于控制路由行为）
+  RouteOptions options = 3;
+}
+
+// 路由选项（用于控制路由行为）
+message RouteOptions {
+  // 超时时间（秒）
+  // 默认值：5秒
+  // 如果业务系统处理时间超过此值，Route 服务会返回超时错误
+  int32 timeout_seconds = 1;
+  
+  // 是否启用追踪
+  // 默认值：true
+  // 如果为 true，Route 服务会传播追踪信息到业务系统
+  bool enable_tracing = 2;
+  
+  // 重试策略
+  // 默认值：RETRY_STRATEGY_NONE（不重试）
+  RetryStrategy retry_strategy = 3;
+  
+  // 负载均衡策略（可选）
+  // 如果未指定，使用 Route 服务的默认策略
+  LoadBalanceStrategy load_balance_strategy = 4;
+  
+  // 路由优先级（可选，用于优先级路由）
+  // 值越大优先级越高，默认为 0
+  int32 priority = 5;
+}
+
+// 重试策略
+enum RetryStrategy {
+  RETRY_STRATEGY_UNSPECIFIED = 0;
+  RETRY_STRATEGY_NONE = 1;           // 不重试（默认）
+  RETRY_STRATEGY_ONCE = 2;           // 重试一次
+  RETRY_STRATEGY_EXPONENTIAL = 3;    // 指数退避重试（最多3次）
+}
+
+// 负载均衡策略
+enum LoadBalanceStrategy {
+  LOAD_BALANCE_STRATEGY_UNSPECIFIED = 0;
+  LOAD_BALANCE_STRATEGY_ROUND_ROBIN = 1;        // 轮询（默认）
+  LOAD_BALANCE_STRATEGY_LEAST_CONNECTIONS = 2;  // 最少连接
+  LOAD_BALANCE_STRATEGY_CONSISTENT_HASH = 3;    // 一致性哈希（保证会话路由到同一实例）
+}
+
+// 路由消息响应
+message RouteMessageResponse {
+  // 路由后的响应数据（protobuf 编码的 SendMessageResponse）
+  // 如果路由成功，包含业务系统的响应
+  // 如果路由失败，此字段为空，查看 status 获取错误信息
+  bytes response_data = 1;
+  
+  // 实际路由到的服务端点（用于监控和调试）
+  // 格式：{service_name}:{instance_id} 或 {host}:{port}
+  // 例如：message-orchestrator:instance-001 或 192.168.1.100:8080
+  string routed_endpoint = 2;
+  
+  // 路由元数据（用于监控和调试）
+  RouteMetadata metadata = 3;
+  
+  // RPC 状态（可选）
+  // code = 0 表示成功，其他值表示失败
+  optional flare.common.v1.RpcStatus status = 4;
+}
+
+// 路由操作事件请求（Gateway 调用 Route 转发撤回/编辑/标记等事件）
+message RouteEventRequest {
+  string svid = 1;                           // 业务系统标识符，如 "svid.im"
+  flare.common.v1.Event event = 2;           // 领域事件
+  RouteOptions options = 3;
+}
+
+// 路由操作事件响应（response_data 为 protobuf 编码的 flare.common.v1.OperationAck）
+message RouteEventResponse {
+  bytes response_data = 1;
+  string routed_endpoint = 2;
+  RouteMetadata metadata = 3;
+  optional flare.common.v1.RpcStatus status = 4;
+}
+
+// 路由元数据（用于监控和调试）
+message RouteMetadata {
+  // 路由耗时（毫秒）
+  // 从 Route 服务接收到请求到业务系统返回响应的总耗时
+  int64 route_duration_ms = 1;
+  
+  // 业务系统处理耗时（毫秒）
+  // 业务系统实际处理消息的耗时（如果可获取）
+  int64 business_duration_ms = 2;
+  
+  // 路由决策耗时（毫秒）
+  // Route 服务进行路由决策的耗时（服务发现、负载均衡等）
+  int64 decision_duration_ms = 3;
+  
+  // 是否从缓存获取路由信息
+  // 如果为 true，表示使用了缓存的路由信息，可能不是最新的
+  bool from_cache = 4;
+  
+  // 路由决策的详细信息（用于调试）
+  map<string, string> decision_details = 5;
+  
+  // 追踪信息（如果启用追踪，可选）
+  optional flare.common.v1.TraceContext trace = 6;
+}

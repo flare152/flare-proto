@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package flare.common.v1;
+
+// =============================================================================
+// 共享枚举（Message/Session BC 事件与读模型共用）
+// =============================================================================
+// 用于 event.proto 与 message_extended.proto，避免 event ↔ message 循环依赖。
+
+enum DeleteType {
+  DELETE_TYPE_UNSPECIFIED = 0;
+  DELETE_TYPE_SOFT = 1;   // 软删（仅当前用户隐藏）
+  DELETE_TYPE_HARD = 2;   // 硬删（仅管理员）
+}
+
+enum ReactionAction {
+  REACTION_ACTION_UNSPECIFIED = 0;
+  REACTION_ACTION_ADD = 1;
+  REACTION_ACTION_REMOVE = 2;
+}
+
+enum MarkType {
+  MARK_TYPE_UNSPECIFIED = 0;
+  MARK_TYPE_IMPORTANT = 1;  // 重要
+  MARK_TYPE_TODO = 2;       // 待办
+  MARK_TYPE_DONE = 3;       // 已处理
+  MARK_TYPE_CUSTOM = 4;     // 自定义
+}

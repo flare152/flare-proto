@@ -1,0 +1,277 @@
+syntax = "proto3";
+
+package flare.signaling.online;
+
+option go_package = "github.com/flare-labs/flare/proto/signaling/online;online";
+
+import "google/protobuf/timestamp.proto";
+import "common/errors.proto";
+import "common/metadata.proto";
+
+// Online 服务（会话与在线状态）。约定：tenant_id、request_id 由 metadata 注入（见 common/metadata.proto）。
+
+// -----------------------------------------------------------------------------
+// 枚举定义
+// -----------------------------------------------------------------------------
+
+// 设备冲突策略枚举
+enum DeviceConflictStrategy {
+  DEVICE_CONFLICT_STRATEGY_UNSPECIFIED = 0;
+  DEVICE_CONFLICT_STRATEGY_EXCLUSIVE = 1;                  // 互斥（同用户只能一个设备）
+  DEVICE_CONFLICT_STRATEGY_PLATFORM_EXCLUSIVE = 2;         // 平台互斥（同平台只能一个设备）
+  DEVICE_CONFLICT_STRATEGY_COEXIST = 3;                    // 共存（允许多设备同时在线）
+}
+
+// 冲突动作枚举
+enum ConflictAction {
+  CONFLICT_ACTION_UNSPECIFIED = 0;
+  CONFLICT_ACTION_LOGOUT = 1;                              // 登出旧设备
+  CONFLICT_ACTION_WARN = 2;                                // 警告但不登出
+  CONFLICT_ACTION_ALLOW = 3;                               // 允许共存
+}
+
+// -----------------------------------------------------------------------------
+// 会话管理（SignalingService）
+// -----------------------------------------------------------------------------
+
+// 登录请求
+message LoginRequest {
+  string user_id = 1;
+  string token = 2;
+  string device_id = 3;
+  string server_id = 4;
+  map<string, string> metadata = 5;
+  string device_platform = 6;
+  string app_version = 7;
+  DeviceConflictStrategy desired_conflict_strategy = 8;
+  
+  // 设备优先级（用于推送策略）
+  flare.common.v1.DevicePriority device_priority = 9;
+  
+  // Token 版本（用于强制下线）
+  int64 token_version = 10;
+  
+  // 链接质量基准（登录时上报）
+  flare.common.v1.ConnectionQuality initial_quality = 11;
+  
+  // 会话恢复标识（断线重连）
+  string resume_conversation_id = 12;
+}
+
+message LoginResponse {
+  bool success = 1;
+  string conversation_id = 2;
+  string route_server = 3;
+  string error_message = 4;
+  flare.common.v1.RpcStatus status = 5;
+  DeviceConflictStrategy applied_conflict_strategy = 6;
+}
+
+// 登出请求
+message LogoutRequest {
+  string user_id = 1;
+  string conversation_id = 2;
+}
+
+message LogoutResponse {
+  bool success = 1;
+  flare.common.v1.RpcStatus status = 2;
+}
+
+// 心跳请求
+message HeartbeatRequest {
+  string user_id = 1;
+  string conversation_id = 2;
+  
+  // 链接质量上报（心跳时更新）
+  flare.common.v1.ConnectionQuality current_quality = 3;
+}
+
+message HeartbeatResponse {
+  bool success = 1;
+  flare.common.v1.RpcStatus status = 2;
+}
+
+// 在线状态查询请求
+message GetOnlineStatusRequest {
+  repeated string user_ids = 1;
+}
+
+message GetOnlineStatusResponse {
+  map<string, OnlineStatus> statuses = 1;
+  flare.common.v1.RpcStatus status = 2;
+}
+
+// 在线状态
+message OnlineStatus {
+  bool online = 1;
+  string server_id = 2;
+  string cluster_id = 3;
+  google.protobuf.Timestamp last_seen = 4;
+
+  string device_id = 6;
+  string device_platform = 7;
+  string gateway_id = 8;
+}
+
+// 在线状态变化事件
+message PresenceEvent {
+  string user_id = 1;
+  OnlineStatus status = 2;
+  google.protobuf.Timestamp occurred_at = 3;
+  ConflictAction conflict_action = 4;
+  string reason = 5;
+}
+
+message WatchPresenceRequest {
+  repeated string user_ids = 3;
+}
+
+// -----------------------------------------------------------------------------
+// 用户在线状态服务（UserService）
+// -----------------------------------------------------------------------------
+
+// 设备信息
+message DeviceInfo {
+  string device_id = 1;
+  string platform = 2;
+  string model = 3;
+  string os_version = 4;
+  google.protobuf.Timestamp last_active_time = 5;
+  
+  // 设备优先级（用于推送策略）
+  flare.common.v1.DevicePriority priority = 6;
+  
+  // Token 版本
+  int64 token_version = 7;
+  
+  // 链接质量指标
+  flare.common.v1.ConnectionQuality connection_quality = 8;
+  
+  // 会话ID
+  string conversation_id = 9;
+  
+  // 网关ID（用于路由）
+  string gateway_id = 10;
+  
+  // Server ID（用于跨服务器路由）
+  string server_id = 11;
+}
+
+// 用户在线状态
+message UserPresence {
+  string user_id = 1;
+  bool is_online = 2;
+  repeated DeviceInfo devices = 3;
+  google.protobuf.Timestamp last_seen = 4;
+}
+
+// 查询用户在线状态请求
+message GetUserPresenceRequest {
+  string user_id = 1;
+}
+
+message GetUserPresenceResponse {
+  UserPresence presence = 1;
+  flare.common.v1.RpcStatus status = 2;
+}
+
+// 批量查询在线状态请求
+message BatchGetUserPresenceRequest {
+  repeated string user_ids = 1;                            // 最多100个
+}
+
+message BatchGetUserPresenceResponse {
+  map<string, UserPresence> presences = 1;
+  flare.common.v1.RpcStatus status = 2;
+}
+
+// 订阅用户状态请求
+message SubscribeUserPresenceRequest {
+  repeated string user_ids = 1;
+}
+
+// 用户状态变化事件
+message UserPresenceEvent {
+  string user_id = 1;
+  bool is_online = 2;
+  string device_id = 3;
+  google.protobuf.Timestamp timestamp = 4;
+}
+
+// 列出用户设备请求
+message ListUserDevicesRequest {
+  string user_id = 1;
+}
+
+message ListUserDevicesResponse {
+  repeated DeviceInfo devices = 1;
+  flare.common.v1.RpcStatus status = 2;
+}
+
+// 踢出设备请求
+message KickDeviceRequest {
+  string user_id = 1;
+  string device_id = 2;
+  string reason = 3;                                        // 踢出原因
+}
+
+message KickDeviceResponse {
+  bool success = 1;
+  flare.common.v1.RpcStatus status = 2;
+}
+
+// 查询设备请求
+message GetDeviceRequest {
+  string user_id = 1;
+  string device_id = 2;
+}
+
+message GetDeviceResponse {
+  DeviceInfo device = 1;
+  flare.common.v1.RpcStatus status = 2;
+}
+
+// -----------------------------------------------------------------------------
+// 服务定义
+// -----------------------------------------------------------------------------
+
+// 在线服务（统一管理会话和用户在线状态）
+service OnlineService {
+  // ========== 会话管理 ==========
+  
+  // 用户登录（建立会话，支持设备冲突策略）
+  rpc Login(LoginRequest) returns (LoginResponse);
+  
+  // 用户登出（销毁会话）
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+  
+  // 心跳（保持会话活跃，更新链接质量）
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  
+  // 获取在线状态（批量查询，最多100个用户）
+  rpc GetOnlineStatus(GetOnlineStatusRequest) returns (GetOnlineStatusResponse);
+  
+  // 监听在线状态变化（流式接口）
+  rpc WatchPresence(WatchPresenceRequest) returns (stream PresenceEvent);
+  
+  // ========== 用户在线状态 ==========
+
+  // 查询用户在线状态
+  rpc GetUserPresence(GetUserPresenceRequest) returns (GetUserPresenceResponse);
+  
+  // 批量查询在线状态（最多100个用户）
+  rpc BatchGetUserPresence(BatchGetUserPresenceRequest) returns (BatchGetUserPresenceResponse);
+  
+  // 订阅用户状态变化（流式接口）
+  rpc SubscribeUserPresence(SubscribeUserPresenceRequest) returns (stream UserPresenceEvent);
+  
+  // 列出用户设备（包含在线和离线设备）
+  rpc ListUserDevices(ListUserDevicesRequest) returns (ListUserDevicesResponse);
+  
+  // 踢出设备（强制下线）
+  rpc KickDevice(KickDeviceRequest) returns (KickDeviceResponse);
+  
+  // 查询设备信息
+  rpc GetDevice(GetDeviceRequest) returns (GetDeviceResponse);
+}

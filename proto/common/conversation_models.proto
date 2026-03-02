@@ -1,0 +1,266 @@
+syntax = "proto3";
+
+package flare.common.v1;
+
+import "google/protobuf/timestamp.proto";
+import "common/message_content.proto";
+
+// =============================================================================
+// Session BC 读模型（会话列表/详情/未读/游标）
+// =============================================================================
+// ConversationLight / Summary / Detail 由事件流消费后生成；Query 只读不写。
+// -----------------------------------------------------------------------------
+// 会话基础枚举
+// -----------------------------------------------------------------------------
+
+// 会话可见性（列表与权限控制）
+enum ConversationVisibility {
+  CONVERSATION_VISIBILITY_UNSPECIFIED = 0;
+  CONVERSATION_VISIBILITY_PRIVATE = 1;
+  CONVERSATION_VISIBILITY_TENANT = 2;
+  CONVERSATION_VISIBILITY_PUBLIC = 3;
+}
+
+// 会话生命周期状态（归档/删除与活跃度）
+enum ConversationLifecycleState {
+  CONVERSATION_LIFECYCLE_STATE_UNSPECIFIED = 0;
+  CONVERSATION_LIFECYCLE_ACTIVE = 1;
+  CONVERSATION_LIFECYCLE_SUSPENDED = 2;
+  CONVERSATION_LIFECYCLE_ARCHIVED = 3;
+  CONVERSATION_LIFECYCLE_DELETED = 4;
+}
+
+// 设备冲突解决策略（强制下线/多设备共存等）
+enum ConflictResolution {
+  CONFLICT_RESOLUTION_UNSPECIFIED = 0;
+  CONFLICT_RESOLUTION_EXCLUSIVE = 1;
+  CONFLICT_RESOLUTION_PLATFORM_EXCLUSIVE = 2;
+  CONFLICT_RESOLUTION_COEXIST = 3;
+  CONFLICT_RESOLUTION_FORCE_LOGOUT = 4;
+}
+
+// 设备在线状态
+enum DeviceState {
+  DEVICE_STATE_UNSPECIFIED = 0;
+  DEVICE_STATE_ONLINE = 1;
+  DEVICE_STATE_OFFLINE = 2;
+  DEVICE_STATE_CONFLICT = 3;
+}
+
+
+
+// -----------------------------------------------------------------------------
+// Level 1：轻量会话模型（会话列表/增量同步）
+// -----------------------------------------------------------------------------
+
+message ConversationLight {
+  string conversation_id = 1;
+  string conversation_type = 2;
+
+  // 落地同步的关键字段（极高频）
+  uint32 unread_count = 3;
+  uint64 max_seq = 4;
+  uint64 last_read_seq = 5;
+
+  MessagePreview preview = 6;
+  google.protobuf.Timestamp updated_at = 7;
+
+  // 用户个性化属性
+  bool is_muted = 8;
+  bool is_pinned = 9;
+
+  // 少量扩展字段（允许 UI 自定义）
+  map<string, string> ext = 10;
+
+  // 会话标签（可选）
+  repeated string labels = 11;
+
+  // 会话免打扰配置
+  bool is_muted_detail = 12;
+  google.protobuf.Timestamp mute_until = 13;
+}
+
+// -----------------------------------------------------------------------------
+// Level 2：会话摘要（进入聊天但还未加载详情）
+// -----------------------------------------------------------------------------
+
+message ConversationSummary {
+  string conversation_id = 1;
+  string conversation_type = 2;
+  string business_type = 3;
+
+  // 展示信息
+  string display_name = 4;
+  string avatar_url = 5;
+
+  // 最后一条消息
+  MessagePreview last_message = 6;
+
+  uint32 unread_count = 7;
+  uint64 max_seq = 8;
+  uint64 last_read_seq = 9;
+
+  bool is_muted = 10;
+  bool is_pinned = 11;
+
+  google.protobuf.Timestamp updated_at = 12;
+
+  // 轻量 metadata（业务扩展）
+  map<string, string> metadata = 13;
+
+  // 会话标签（可选）
+  repeated string labels = 14;
+
+  // 会话免打扰配置
+  bool is_muted_detail = 15;
+  google.protobuf.Timestamp mute_until = 16;
+
+  // 会话创建时间
+  google.protobuf.Timestamp created_at = 17;
+}
+
+// -----------------------------------------------------------------------------
+// Level 3：完整会话实体（会话详情/群信息/设置页）
+// -----------------------------------------------------------------------------
+
+// 会话参与者（权限/角色）
+message ConversationParticipant {
+  string user_id = 1;
+  repeated string roles = 2;
+  bool muted = 3;
+  bool pinned = 4;
+  map<string, string> attributes = 5;
+
+  // 参与者加入时间
+  google.protobuf.Timestamp joined_at = 6;
+
+  // 参与者昵称（群昵称）
+  string nickname = 7;
+}
+
+// 会话策略
+message ConversationPolicy {
+  ConflictResolution conflict_resolution = 1;
+  int32 max_devices = 2;
+  bool allow_anonymous = 3;
+  bool allow_history_sync = 4;
+  map<string, string> metadata = 5;
+
+  // 消息搜索权限
+  bool allow_message_search = 6;
+
+  // 文件传输权限
+  bool allow_file_transfer = 7;
+}
+
+// 会话完整实体（详细信息页面）
+message ConversationDetail {
+  string conversation_id = 1;
+  string conversation_type = 2;
+  string business_type = 3;
+
+  map<string, string> attributes = 4;
+  repeated ConversationParticipant participants = 5;
+
+  ConversationVisibility visibility = 6;
+  ConversationLifecycleState lifecycle_state = 7;
+
+  google.protobuf.Timestamp created_at = 8;
+  google.protobuf.Timestamp updated_at = 9;
+
+  ConversationPolicy policy = 10;
+
+  string display_name = 11;
+  string avatar_url = 12;
+
+  DevicePresence presence = 13;
+
+  // 会话公告
+  string announcement = 14;
+  google.protobuf.Timestamp announcement_updated_at = 15;
+  string announcement_updated_by = 16;
+
+  // 会话描述
+  string description = 17;
+
+  // 会话扩展配置
+  map<string, string> extended_config = 18;
+}
+
+// -----------------------------------------------------------------------------
+// 设备在线视图
+// -----------------------------------------------------------------------------
+
+message DevicePresence {
+  string device_id = 1;
+  string device_platform = 2;
+  DeviceState state = 3;
+  google.protobuf.Timestamp last_seen_at = 4;
+
+  // 设备名称
+  string device_name = 5;
+
+  // 设备IP地址
+  string ip_address = 6;
+}
+
+// -----------------------------------------------------------------------------
+// 会话草稿
+// -----------------------------------------------------------------------------
+
+message ConversationDraft {
+  string conversation_id = 1;
+  string text = 2;
+  repeated string image_urls = 3;
+  string file_url = 4;
+  google.protobuf.Timestamp saved_at = 5;
+  map<string, string> metadata = 6;
+}
+
+// -----------------------------------------------------------------------------
+// 会话标签
+// -----------------------------------------------------------------------------
+
+message ConversationLabel {
+  string label_id = 1;
+  string name = 2;
+  string color = 3;  // 标签颜色
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp updated_at = 5;
+}
+
+// -----------------------------------------------------------------------------
+// 会话搜索过滤器
+// -----------------------------------------------------------------------------
+
+message ConversationSearchFilter {
+  string keyword = 1;
+  repeated string conversation_types = 2;
+  repeated string labels = 3;
+  bool include_archived = 4;
+  google.protobuf.Timestamp updated_after = 5;
+  google.protobuf.Timestamp updated_before = 6;
+}
+
+// -----------------------------------------------------------------------------
+// 会话排序选项
+// -----------------------------------------------------------------------------
+
+enum ConversationSortField {
+  CONVERSATION_SORT_FIELD_UNSPECIFIED = 0;
+  CONVERSATION_SORT_FIELD_UPDATED_AT = 1;
+  CONVERSATION_SORT_FIELD_CREATED_AT = 2;
+  CONVERSATION_SORT_FIELD_UNREAD_COUNT = 3;
+  CONVERSATION_SORT_FIELD_DISPLAY_NAME = 4;
+}
+
+enum SortOrder {
+  SORT_ORDER_UNSPECIFIED = 0;
+  SORT_ORDER_ASC = 1;
+  SORT_ORDER_DESC = 2;
+}
+
+message ConversationSort {
+  ConversationSortField field = 1;
+  SortOrder order = 2;
+}

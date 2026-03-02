@@ -3,429 +3,113 @@ syntax = "proto3";
 package flare.common.v1;
 
 import "google/protobuf/timestamp.proto";
+import "google/protobuf/any.proto";
 import "common/metadata.proto";
+import "common/message_content.proto";
+import "common/message_extended.proto";
 
-// -----------------------------------------------------------------------------
-// 消息核心定义（统一消息结构）
-// -----------------------------------------------------------------------------
-// 设计原则：
-// 1. 所有消息都包含 session_id（IM核心概念）
-// 2. 统一消息结构，便于跨服务传递
-// 3. 类型安全，避免使用 bytes 传递消息
-// 4. 支持扩展，通过 extra 和 attributes 字段
-// 5. 基于消息.drawio的完整消息类型支持
-//
+// =============================================================================
+// Message 聚合根（Message BC）- DDD + CQRS
+// =============================================================================
+// 事件流 + 旁路表存储。Message 为写模型聚合根与同步/列表展示的最小视图。
+// 身份：(conversation_id, seq) 会话内全序；server_id 全局唯一。
+// FSM: CREATED→SENT→DELIVERED→READ | RECALLED | DELETED_SOFT | DELETED_HARD（见 MessageStatus）。
+// 时间线/已读/编辑历史/反应/可见性 存旁路表，按需 Query（见 message_extended）。
+// 上行：ClientPacket.send_message(Message) 或 SendMessage RPC，仅填可写字段；服务端回填 server_id/seq/created_at/status。
 
-// -----------------------------------------------------------------------------
-// 枚举定义
-// -----------------------------------------------------------------------------
-
-// 消息类型（主类型，基于drawio中的消息类型）
-enum MessageType {
-  MESSAGE_TYPE_UNSPECIFIED = 0;
-  
-  // 基础消息类型（持久化）
-  MESSAGE_TYPE_TEXT = 1;        // 文本消息（TextElem）
-  MESSAGE_TYPE_IMAGE = 2;       // 图片消息（PictureElem）
-  MESSAGE_TYPE_VIDEO = 3;       // 视频消息（VideoElem）
-  MESSAGE_TYPE_AUDIO = 4;       // 语音消息（SoundElem）
-  MESSAGE_TYPE_FILE = 5;        // 文件消息（FileElem）
-  MESSAGE_TYPE_LOCATION = 6;    // 位置消息（LocationElem）
-  MESSAGE_TYPE_CARD = 7;        // 名片消息（CardElem）
-  MESSAGE_TYPE_CUSTOM = 8;      // 自定义消息（CustomElem）
-  MESSAGE_TYPE_NOTIFICATION = 9; // 通知消息（NotificationElem，不持久化）
-  
-  // 功能消息类型（不持久化，仅用于实时交互）
-  MESSAGE_TYPE_TYPING = 10;     // 正在输入
-  MESSAGE_TYPE_RECALL = 11;     // 撤回消息
-  MESSAGE_TYPE_READ = 12;       // 已读消息
-  MESSAGE_TYPE_FORWARD = 13;    // 转发消息
-  MESSAGE_TYPE_VOTE = 14;       // 投票消息
-  MESSAGE_TYPE_TASK = 15;       // 任务消息
-  MESSAGE_TYPE_SCHEDULE = 16;   // 日程消息
-  MESSAGE_TYPE_ANNOUNCEMENT = 17; // 群公告消息
-}
-
-// 消息状态枚举（基于drawio中的status字段）
 enum MessageStatus {
   MESSAGE_STATUS_UNSPECIFIED = 0;
-  MESSAGE_STATUS_CREATED = 1;          // 已创建（0:创建）
-  MESSAGE_STATUS_SENT = 2;             // 已发送（1:发送成功）
-  MESSAGE_STATUS_DELIVERED = 3;        // 已送达
-  MESSAGE_STATUS_READ = 4;             // 已读
-  MESSAGE_STATUS_FAILED = 5;           // 发送失败（2:发送失败）
-  MESSAGE_STATUS_RECALLED = 6;         // 已撤回
+  MESSAGE_STATUS_CREATED = 1;   // 已创建
+  MESSAGE_STATUS_SENT = 2;     // 已发送（正常态，可编辑）
+  MESSAGE_STATUS_DELIVERED = 3;// 已送达
+  MESSAGE_STATUS_READ = 4;     // 已读
+  MESSAGE_STATUS_FAILED = 5;   // 发送失败
+  MESSAGE_STATUS_RECALLED = 6; // 已撤回（终态）
+  MESSAGE_STATUS_DELETED_HARD = 7;  // 硬删除（终态，仅管理员）
+  MESSAGE_STATUS_DELETED_SOFT = 8;   // 软删除（用户维度，可恢复）
 }
 
-// 消息来源枚举（基于drawio中的msg_form字段）
 enum MessageSource {
   MESSAGE_SOURCE_UNSPECIFIED = 0;
-  MESSAGE_SOURCE_USER = 1;             // 用户消息（0:用户）
-  MESSAGE_SOURCE_SYSTEM = 2;           // 系统消息（1:系统）
-  MESSAGE_SOURCE_BOT = 3;              // 机器人消息
-  MESSAGE_SOURCE_ADMIN = 4;            // 管理员消息（2:其他）
+  MESSAGE_SOURCE_USER = 1;     // 用户消息
+  MESSAGE_SOURCE_SYSTEM = 2;   // 系统消息
+  MESSAGE_SOURCE_BOT = 3;      // 机器人消息
+  MESSAGE_SOURCE_ADMIN = 4;    // 管理员消息
 }
 
-// 内容类型枚举（基于drawio中的content_type字段，用于区分消息内容的子类型）
 enum ContentType {
   CONTENT_TYPE_UNSPECIFIED = 0;
-  CONTENT_TYPE_PLAIN_TEXT = 1;         // 纯文本
-  CONTENT_TYPE_RICH_TEXT = 2;          // 富文本
-  CONTENT_TYPE_MARKDOWN = 3;           // Markdown
-  CONTENT_TYPE_HTML = 4;               // HTML
-  CONTENT_TYPE_JSON = 5;               // JSON格式
+  CONTENT_TYPE_PLAIN_TEXT = 1; // 纯文本
+  CONTENT_TYPE_MARKDOWN = 2;   // Markdown
+  CONTENT_TYPE_HTML = 3;       // HTML
+  CONTENT_TYPE_JSON = 4;       // JSON
 }
 
-// 消息可见性状态
 enum VisibilityStatus {
-  VISIBLE = 0;   // 可见
-  HIDDEN = 1;     // 隐藏（软删除）
-  DELETED = 2;    // 已删除（永久删除）
+  VISIBILITY_VISIBLE = 0;  // 可见
+  VISIBILITY_HIDDEN = 1;    // 隐藏（软删除）
+  VISIBILITY_DELETED = 2;   // 已删除
 }
 
-// -----------------------------------------------------------------------------
-// 消息内容结构（类型安全，每种消息类型对应专门的内容结构）
-// -----------------------------------------------------------------------------
-
-// 消息内容（类型安全，基于drawio中的各种Elem结构）
-message MessageContent {
-  oneof content {
-    TextContent text = 1;              // 文本消息内容（TextElem）
-    ImageContent image = 2;            // 图片消息内容（PictureElem）
-    VideoContent video = 3;            // 视频消息内容（VideoElem）
-    AudioContent audio = 4;             // 语音消息内容（SoundElem）
-    FileContent file = 5;               // 文件消息内容（FileElem）
-    LocationContent location = 6;       // 位置消息内容（LocationElem）
-    CardContent card = 7;              // 名片消息内容（CardElem）
-    NotificationContent notification = 8; // 通知消息内容（NotificationElem）
-    CustomContent custom = 9;          // 自定义消息内容（CustomElem）
-    ForwardContent forward = 10;        // 转发消息内容（功能消息）
-    TypingContent typing = 11;          // 正在输入内容（功能消息）
-    VoteContent vote = 12;              // 投票消息内容
-    TaskContent task = 13;              // 任务消息内容
-    ScheduleContent schedule = 14;      // 日程消息内容
-    AnnouncementContent announcement = 15; // 群公告消息内容
-    SystemEventContent system_event = 16;  // 系统事件消息内容（撤回提示/已读回执等）
-  }
+enum ConversationType {
+  CONVERSATION_TYPE_UNSPECIFIED = 0;
+  CONVERSATION_TYPE_SINGLE = 1;  // 单聊
+  CONVERSATION_TYPE_GROUP = 2;   // 群聊
+  CONVERSATION_TYPE_CHANNEL = 3; // 频道
 }
 
-// 文本内容（基于drawio中的TextElem）
-message TextContent {
-  string text = 1;                      // 文本内容（支持富文本）
-  repeated Mention mentions = 2;         // @提及列表
-}
-
-// @提及信息（基于drawio中的@消息功能）
-message Mention {
-  string user_id = 1;   // 用户ID
-  int32 start = 2;      // 起始位置（字符索引）
-  int32 length = 3;     // 长度（字符数）
-}
-
-// 图片内容（基于drawio中的PictureElem和PictureInfo）
-message ImageContent {
-  string image_id = 1;                  // 图片ID（关联MediaAttachment）
-  ImageInfo source = 2;                 // 原图信息（source_picture）
-  ImageInfo thumbnail = 3;              // 缩略图信息（snapshot_picture，可选）
-  string description = 4;               // 图片描述（可选）
-}
-
-// 图片信息（基于drawio中的PictureInfo）
-message ImageInfo {
-  string uuid = 1;                      // 图片ID
-  string type = 2;                      // 图片类型
-  int64 size = 3;                       // 图片大小（字节）
-  int32 width = 4;                      // 图片宽度
-  int32 height = 5;                     // 图片高度
-  string url = 6;                       // 图片完整地址
-}
-
-// 视频内容（基于drawio中的VideoElem）
-message VideoContent {
-  string video_id = 1;                  // 视频ID（关联MediaAttachment）
-  VideoInfo source = 2;                 // 视频信息
-  ImageInfo cover = 3;                  // 封面图信息（cover_picture，可选）
-  string description = 4;               // 视频描述（可选）
-}
-
-// 视频信息（基于drawio中的VideoElem字段）
-message VideoInfo {
-  string uuid = 1;                      // 视频ID
-  string source_path = 2;              // 资源本地路径
-  string url = 3;                       // 视频资源地址
-  string type = 4;                      // 视频文件类型
-  int64 size = 5;                       // 文件大小
-  int64 duration_ms = 6;                // 时长（毫秒）
-  // 封面信息通过cover字段单独提供
-}
-
-// 语音内容（基于drawio中的SoundElem）
-message AudioContent {
-  string audio_id = 1;                  // 语音ID（关联MediaAttachment）
-  AudioInfo source = 2;                 // 语音信息
-  int64 duration_ms = 3;                // 时长（毫秒）
-  string description = 4;               // 语音描述（可选）
-}
-
-// 语音信息（基于drawio中的SoundElem字段）
-message AudioInfo {
-  string uuid = 1;                      // 语音ID
-  string source_path = 2;              // 资源本地路径
-  string url = 3;                       // 资源网络地址
-  int64 size = 4;                       // 文件大小
-  int64 duration_ms = 5;                // 时长（毫秒）
-  string type = 6;                      // 音频文件类型
-}
-
-// 文件内容（基于drawio中的FileElem）
-message FileContent {
-  string file_id = 1;                  // 文件ID（关联MediaAttachment）
-  string file_name = 2;                 // 文件名（name）
-  int64 file_size = 3;                  // 文件大小（size）
-  string file_type = 4;                 // 文件类型（type，MIME类型）
-  string source_path = 5;               // 资源本地路径（source_path）
-  string url = 6;                       // 资源地址（url）
-  string description = 7;               // 文件描述（可选）
-}
-
-// 位置内容（基于drawio中的LocationElem）
-message LocationContent {
-  string description = 1;               // 位置描述
-  double longitude = 2;                 // 经度
-  double latitude = 3;                  // 纬度
-  string address = 4;                   // 地址（可选）
-  string poi_id = 5;                   // POI ID（可选）
-}
-
-// 名片内容（基于drawio中的CardElem）
-message CardContent {
-  string user_id = 1;                   // 用户ID
-  string nickname = 2;                 // 用户昵称
-  string avatar_url = 3;                // 头像URL（face_url）
-  string description = 4;               // 个人简介（ex，扩展字段）
-  map<string, string> extra = 5;        // 扩展字段（可选）
-}
-
-// 通知内容（基于drawio中的NotificationElem）
-message NotificationContent {
-  string title = 1;                     // 通知标题
-  string body = 2;                      // 通知内容（detail）
-  string notification_type = 3;         // 通知类型（系统通知/业务通知等）
-  map<string, string> data = 4;         // 通知数据（用于业务处理）
-}
-
-// 自定义内容（基于drawio中的CustomElem）
-message CustomContent {
-  string type = 1;                      // 内容类型（rich_card/interactive_message等）
-  bytes payload = 2;                    // 负载数据（data，业务自定义格式）
-  string description = 3;               // 消息描述（desc，可选）
-  map<string, string> metadata = 4;     // 元数据
-}
-
-// 转发内容（功能消息，基于drawio中的转发消息功能）
-message ForwardContent {
-  repeated string message_ids = 1;      // 被转发的消息ID列表
-  string forward_reason = 2;            // 转发原因（可选）
-  map<string, string> metadata = 3;     // 扩展字段（可选）
-}
-
-// 正在输入内容（功能消息，基于drawio中的正在输入功能）
-message TypingContent {
-  string action = 1;                    // 动作类型（typing/stop）
-  string session_id = 2;                // 会话ID
-  map<string, string> metadata = 3;     // 扩展字段（可选）
-}
-
-// -----------------------------------------------------------------------------
-// 离线推送信息（基于drawio中的offline_push_info）
-// -----------------------------------------------------------------------------
-
-// 离线推送信息
-message OfflinePushInfo {
-  string title = 1;                     // 推送的标题
-  string desc = 2;                      // 推送内容
-  string ios_push_sound = 3;            // iOS推送铃声
-  bool ios_badge_count = 4;             // iOS是否增加角标
-  string signal_info = 5;               // 签名信息
-}
-
-// -----------------------------------------------------------------------------
-// 消息核心结构
-// -----------------------------------------------------------------------------
-
-// 消息对象（完整的消息信息，所有服务统一使用）
-// 基于drawio中的消息基本结构，优化为类型安全、易于扩展的结构
 message Message {
-  // 基础标识（基于drawio中的server_msg_id、client_msg_id）
-  string id = 1;                                    // 消息ID（全局唯一，server_msg_id）
-  string session_id = 2;                            // 会话ID（必需，IM核心概念）
-  string client_msg_id = 3;                         // 客户端消息ID（client_msg_id，用于去重）
-  
-  // 发送者信息（基于drawio中的send_id、send_nickname、send_face_url、send_platform_id）
-  string sender_id = 4;                             // 发送者ID（send_id，必需）
-  MessageSource source = 5;                         // 消息来源（msg_form，优化为枚举）
-  string sender_nickname = 6;                       // 发送者昵称（send_nickname，用于显示）
-  string sender_avatar_url = 7;                     // 发送者头像URL（send_face_url，用于显示）
-  string sender_platform_id = 8;                    // 发送平台ID（send_platform_id）
-  
-  // 接收者信息（基于drawio中的recv_id、group_id）
-  repeated string receiver_ids = 9;                  // 接收者ID列表（群聊场景，必需）
-  string receiver_id = 10;                           // 接收者ID（单聊场景，recv_id，必需）
-  string group_id = 11;                              // 群ID（group_id，群聊场景）
-  
-  // 消息内容（必需，类型安全）
-  MessageContent content = 12;
-  ContentType content_type = 13;                     // 内容类型（content_type，用于区分子类型）
-  
-  // 时间信息（基于drawio中的send_time、create_time）
-  google.protobuf.Timestamp timestamp = 14;         // 时间戳（send_time，RFC3339格式，必需）
-  google.protobuf.Timestamp created_at = 15;        // 创建时间（create_time，可选）
-  int64 seq = 16;                                    // 消息序列号（seq，用于排序）
-  
-  // 消息类型和业务类型（基于drawio中的session_type）
-  MessageType message_type = 17;                    // 消息类型（必需）
-  string business_type = 18;                        // 业务类型（业务自定义，可选）
-  string session_type = 19;                        // 会话类型（session_type，single/group/channel，必需）
-  
-  // 状态信息（基于drawio中的status字段）
-  MessageStatus status = 20;                        // 消息状态（status，优化为枚举）
-  
-  // 扩展字段（基于drawio中的options字段）
-  map<string, string> extra = 21;                   // 扩展字段（options，可选）
-  map<string, string> attributes = 22;               // 自定义属性（可选）
-  
-  // 撤回相关
-  bool is_recalled = 23;                            // 是否已撤回（可选）
-  google.protobuf.Timestamp recalled_at = 24;       // 撤回时间（可选）
-  string recall_reason = 25;                        // 撤回原因（新增，可选）
-  
-  // 阅后即焚相关
-  bool is_burn_after_read = 26;                     // 是否阅后即焚（可选）
-  int32 burn_after_seconds = 27;                    // 阅后即焚秒数（可选）
-  
-  // 租户和审计
-  TenantContext tenant = 28;                        // 租户上下文（必需）
-  AuditContext audit = 29;                          // 审计上下文（可选）
-  
-  // 媒体附件
-  repeated MediaAttachment attachments = 30;        // 媒体附件列表（可选）
-  
-  // 标签和可见性
-  repeated string tags = 31;                        // 标签列表（可选）
-  map<string, VisibilityStatus> visibility = 32;     // 可见性状态（user_id -> VisibilityStatus，可选）
-  
-  // 已读记录（基于drawio中的消息已读功能）
-  repeated MessageReadRecord read_by = 33;           // 已读记录列表（可选）
-  
-  // 操作记录（基于drawio中的撤回消息功能）
-  repeated MessageOperation operations = 34;        // 操作记录列表（可选）
-  
-  // 时间线信息
-  MessageTimeline timeline = 35;                    // 时间线信息（可选）
-  
-  // 转发相关（基于drawio中的转发消息功能）
-  ForwardContent forward_info = 36;                 // 转发信息（可选）
-  
-  // 离线推送信息（基于drawio中的offline_push_info）
-  OfflinePushInfo offline_push_info = 37;          // 离线推送信息（可选）
+  // 身份与顺序（同步锚点）
+  string server_id = 1;           // 服务端消息ID（全局唯一）
+  string conversation_id = 2;     // 会话ID
+  string client_msg_id = 3;       // 客户端消息ID（去重/幂等）
+  uint64 seq = 6;                 // 会话内递增序号
+  google.protobuf.Timestamp created_at = 7; // 消息创建时间（唯一业务时间，与 DB created_at 一致）
+  string sender_id = 4;           // 发送者ID
+  string receiver_id = 11;        // 接收者ID（单聊必填，群聊为空）
+  MessageSource source = 5;       // 消息来源
+  ConversationType conversation_type = 8;
+  MessageType message_type = 9;
+  string business_type = 10;      // 业务类型（扩展）
+
+  // 内容与引用
+  MessageContent content = 20;
+  ContentType content_type = 21;  // 文本格式：纯文本/Markdown/HTML
+  repeated MediaAttachment attachments = 22;
+  QuoteContent quote = 26;        // 引用/回复关系
+  map<string, string> attributes = 24; // 业务扩展（如 thread_id）
+  map<string, string> extra = 23; // 系统扩展
+
+  // 状态（FSM）
+  MessageStatus status = 30;
+  optional google.protobuf.Timestamp recalled_at = 32;  // 仅 status=RECALLED 时设，省编码
+  optional string recall_reason = 33;
+  bool is_burn_after_read = 34;   // 是否阅后即焚
+  int32 burn_after_seconds = 35;  // 阅后即焚秒数（0 表示未设）
+
+  // 仅保留「已编辑」展示所需，完整编辑历史按需拉取（GetMessageEditHistory）
+  optional int32 current_edit_version = 41;  // 0=未编辑，>0 表示已编辑版本
+  optional google.protobuf.Timestamp last_edited_at = 42;
+
+  optional AuditContext audit = 51;   // 审计（按需）
+  repeated string tags = 60;           // 标签（分类/搜索）
+  optional OfflinePushInfo offline_push_info = 61;
+  repeated google.protobuf.Any extensions = 1000;  // 兼容用；业务扩展推荐 CustomContent
+  string tenant = 1001;                // 租户ID（可请求级注入）
 }
 
-// 消息时间线（追踪消息生命周期）
+// 时间线：不随 Message 同步，由 GetMessageDetail / 按需扩展返回。
 message MessageTimeline {
-  google.protobuf.Timestamp ingestion_time = 1;   // 入库时间（RFC3339格式）
-  google.protobuf.Timestamp persisted_time = 2;   // 持久化时间（RFC3339格式）
-  google.protobuf.Timestamp delivered_time = 3;   // 送达时间（RFC3339格式，仅已送达时有效）
-  google.protobuf.Timestamp read_time = 4;        // 已读时间（RFC3339格式，仅已读时有效）
+  google.protobuf.Timestamp created_at = 1;    // 创建时间
+  google.protobuf.Timestamp persisted_at = 2;  // 持久化时间
+  google.protobuf.Timestamp delivered_at = 3;  // 送达时间
+  google.protobuf.Timestamp read_at = 4;       // 已读时间
 }
 
-// 消息已读记录（基于drawio中的消息已读功能）
+// 已读记录：不随 Message 同步，由 GetMessageReadReceipts 等按需接口返回。
 message MessageReadRecord {
-  string user_id = 1;                                  // 用户ID
-  google.protobuf.Timestamp read_at = 2;              // 已读时间（RFC3339格式）
-  google.protobuf.Timestamp burned_at = 3;             // 销毁时间（RFC3339格式，仅阅后即焚且已销毁时有效）
+  string user_id = 1;             // 已读用户ID
+  google.protobuf.Timestamp read_at = 2;
+  google.protobuf.Timestamp burned_at = 3;      // 阅后即焚销毁时间
 }
 
-// 消息操作记录（用于审计和追踪，基于drawio中的撤回消息功能）
-message MessageOperation {
-  string operation_type = 1;                          // 操作类型（recall/delete/edit/pin等）
-  string operator_id = 2;                             // 操作者ID
-  google.protobuf.Timestamp operated_at = 3;          // 操作时间（RFC3339格式）
-  string target_user_id = 4;                          // 目标用户ID（可选）
-  map<string, string> metadata = 5;                   // 元数据
-}
-message VoteContent {
-  string title = 1;
-  repeated string options = 2;
-  bool multi_select = 3;
-  google.protobuf.Timestamp deadline = 4;
-  map<string, int32> votes = 5; // user_id -> option_index
-}
-
-message TaskContent {
-  string title = 1;
-  string description = 2;
-  repeated string assignees = 3; // user_ids
-  google.protobuf.Timestamp due_date = 4;
-  string status = 5; // open/in_progress/done/cancelled
-}
-
-message ScheduleContent {
-  string title = 1;
-  google.protobuf.Timestamp start_time = 2;
-  google.protobuf.Timestamp end_time = 3;
-  string location = 4;
-  repeated string attendees = 5; // user_ids
-}
-
-message AnnouncementContent {
-  string title = 1;
-  string body = 2;
-  string priority = 3; // normal/high/urgent
-  bool pinned = 4;
-}
-
-message SystemEventContent {
-  string event_type = 1; // recall_notice/read_receipt/kickout/etc
-  map<string, string> data = 2;
-}
-
-message MessageHeader {
-  string id = 1;
-  string session_id = 2;
-  string client_msg_id = 3;
-  string sender_id = 4;
-  int64 seq = 5;
-  google.protobuf.Timestamp timestamp = 6;
-  string session_type = 7; // single/group/channel
-  string business_type = 8;
-}
-
-message MessageBody {
-  MessageContent content = 1;
-  ContentType content_type = 2;
-  repeated MediaAttachment attachments = 3;
-  map<string, string> extra = 4;
-  map<string, string> attributes = 5;
-}
-
-message MessageStatusMark {
-  MessageStatus status = 1;
-  bool is_recalled = 2;
-  google.protobuf.Timestamp recalled_at = 3;
-  string recall_reason = 4;
-  bool is_burn_after_read = 5;
-  int32 burn_after_seconds = 6;
-  MessageTimeline timeline = 7;
-  map<string, VisibilityStatus> visibility = 8;
-  repeated MessageReadRecord read_by = 9;
-  repeated MessageOperation operations = 10;
-}
-
-message UnifiedMessage {
-  MessageHeader header = 1;
-  MessageBody body = 2;
-  MessageStatusMark status = 3;
-  flare.common.v1.TenantContext tenant = 4;
-  AuditContext audit = 5;
-  repeated string tags = 6;
-}

@@ -6,18 +6,10 @@ import "google/protobuf/timestamp.proto";
 import "common/errors.proto";
 import "common/metadata.proto";
 import "common/message.proto";
-import "session.proto";
+import "common/conversation_models.proto";
+import "conversation.proto";
 
-// -----------------------------------------------------------------------------
-// Hook 扩展服务接口定义
-// -----------------------------------------------------------------------------
-// 职责：为业务系统提供零侵入的消息管道扩展能力（消息验证、内容审核、通知、统计、审计等）
-// 依赖：storage.proto, session.proto, common/errors.proto, common/metadata.proto
-// Hook类型：PreSend（发送前，可中断）、PostSend（发送后）、Delivery（送达）、Recall（撤回）、
-//          SessionLifecycle（会话生命周期）、Presence（在线状态）、PushPreSend/PostSend/Delivery（推送）、
-//          UserLogin/Logout/Online/Offline（用户生命周期）、Custom（自定义）
-// 编排机制：Hook分组（validation/critical/business）、执行模式（Sequential/Concurrent）、错误策略（FailFast/Retry/Ignore）
-//
+// Hook 扩展服务。约定：tenant_id、actor_id、request_id 由 gRPC metadata 注入（见 common/metadata.proto）。
 
 // -----------------------------------------------------------------------------
 // 枚举定义
@@ -61,13 +53,11 @@ enum LifecycleEventType {
 
 // Hook调用上下文（封装Hook调用时的上下文信息）
 message HookInvocationContext {
-  flare.common.v1.RequestContext request_context = 1;
-  flare.common.v1.TenantContext tenant = 2;
-  string session_id = 3;                                    // 会话ID（某些Hook可能不涉及会话）
-  string session_type = 4;                                   // 会话类型（single/group/channel）
-  string corridor = 5;                                       // Hook所属通道（messaging/signaling/push）
-  map<string, string> tags = 6;                             // Hook选择和过滤标签
-  map<string, string> attributes = 7;                        // 扩展属性
+  string conversation_id = 1;                                    // 会话ID（某些Hook可能不涉及会话）
+  string conversation_type = 2;                                   // 会话类型（single/group/channel）
+  string corridor = 3;                                       // Hook所属通道（messaging/signaling/push）
+  map<string, string> tags = 4;                             // Hook选择和过滤标签
+  map<string, string> attributes = 5;                        // 扩展属性
 }
 
 // Hook消息草稿（PreSend Hook中的消息草稿，未持久化，Hook可修改）
@@ -157,20 +147,20 @@ message RecallHookResponse {
 }
 
 // 会话生命周期事件（监听会话的创建、更新、删除、归档等事件）
-message SessionLifecycleEvent {
-  flare.session.v1.Session session = 1;                     // 会话对象
+message ConversationLifecycleEvent {
+  flare.conversation.v1.Conversation conversation = 1;                     // 会话对象
   LifecycleEventType event = 2;                             // 事件类型
   map<string, string> metadata = 3;                         // 扩展元数据
 }
 
 // 会话生命周期Hook请求
-message SessionLifecycleHookRequest {
+message ConversationLifecycleHookRequest {
   HookInvocationContext context = 1;
-  SessionLifecycleEvent event = 2;
+  ConversationLifecycleEvent event = 2;
 }
 
 // 会话生命周期Hook响应
-message SessionLifecycleHookResponse {
+message ConversationLifecycleHookResponse {
   bool success = 1;
   flare.common.v1.RpcStatus status = 2;
 }
@@ -333,7 +323,7 @@ message UserOfflineHookResponse {
 // 在线状态事件（监听用户设备在线状态的变化）
 message PresenceEvent {
   string user_id = 1;
-  flare.session.v1.DeviceState state = 2;                  // 设备状态
+  flare.common.v1.DeviceState state = 2;                  // 设备状态
   string device_id = 3;
   string device_platform = 4;                              // 设备平台（ios/android/web/pc）
   google.protobuf.Timestamp occurred_at = 5;               // 事件发生时间
@@ -373,7 +363,7 @@ message CustomHookResponse {
 message HookConfig {
   string hook_id = 1;              // Hook配置ID（全局唯一，由系统自动生成）
   string name = 2;                 // Hook名称（用于管理界面展示）
-  string hook_type = 3;            // Hook类型（pre_send/post_send/delivery/recall/session_lifecycle/presence）
+  string hook_type = 3;            // Hook类型（pre_send/post_send/delivery/recall/conversation_lifecycle/presence）
   string tenant_id = 4;            // 租户ID
   int32 priority = 5;              // 优先级（1-1000，数字越小越先执行，建议使用10的倍数）
   bool enabled = 6;                // 是否启用
@@ -412,7 +402,7 @@ message HookTransport {
 // Hook选择器（定义Hook的消息过滤规则）
 message HookSelector {
   repeated string tenants = 1;         // 租户列表（空列表表示匹配所有租户）
-  repeated string session_types = 2;   // 会话类型列表（如["single", "group"]，空列表表示匹配所有会话类型）
+  repeated string conversation_types = 2;   // 会话类型列表（如["single", "group"]，空列表表示匹配所有会话类型）
   repeated string message_types = 3;   // 消息类型列表（如["text", "image", "file"]，空列表表示匹配所有消息类型）
   repeated string business_types = 4;   // 业务类型列表（用于业务系统自定义过滤，空列表表示匹配所有业务类型）
 }
@@ -433,7 +423,6 @@ message CreateHookConfigRequest {
   HookTransport transport = 5;        // 传输方式配置（必需）
   HookSelector selector = 6;          // Hook选择器（可选）
   HookRetryPolicy retry_policy = 7;   // 重试策略（可选）
-  flare.common.v1.RequestContext context = 8;
 }
 
 message CreateHookConfigResponse {
@@ -444,7 +433,6 @@ message CreateHookConfigResponse {
 // 获取Hook配置请求
 message GetHookConfigRequest {
   string hook_id = 1;                 // Hook配置ID（必需）
-  flare.common.v1.RequestContext context = 2;
 }
 
 message GetHookConfigResponse {
@@ -460,7 +448,6 @@ message UpdateHookConfigRequest {
   HookTransport transport = 4;        // 传输方式（可选，不提供时不更新）
   HookSelector selector = 5;          // Hook选择器（可选，不提供时不更新）
   HookRetryPolicy retry_policy = 6;   // 重试策略（可选，不提供时不更新）
-  flare.common.v1.RequestContext context = 7;
 }
 
 message UpdateHookConfigResponse {
@@ -474,7 +461,6 @@ message ListHookConfigsRequest {
   string hook_type = 2;               // Hook类型过滤（可选）
   bool enabled_only = 3;              // 是否只查询启用的Hook（可选）
   flare.common.v1.Pagination pagination = 4;
-  flare.common.v1.RequestContext context = 5;
 }
 
 message ListHookConfigsResponse {
@@ -486,7 +472,6 @@ message ListHookConfigsResponse {
 // 删除Hook配置请求
 message DeleteHookConfigRequest {
   string hook_id = 1;                 // Hook配置ID（必需）
-  flare.common.v1.RequestContext context = 2;
 }
 
 message DeleteHookConfigResponse {
@@ -498,7 +483,6 @@ message DeleteHookConfigResponse {
 message SetHookStatusRequest {
   string hook_id = 1;                 // Hook配置ID（必需）
   bool enabled = 2;                   // 是否启用（true=启用，false=禁用）
-  flare.common.v1.RequestContext context = 3;
 }
 
 message SetHookStatusResponse {
@@ -523,7 +507,6 @@ message HookStatistics {
 message GetHookStatisticsRequest {
   string hook_id = 1;                 // Hook配置ID（必需）
   flare.common.v1.TimeRange time_range = 2;  // 时间范围（可选，不提供时查询最近24小时）
-  flare.common.v1.RequestContext context = 3;
 }
 
 message GetHookStatisticsResponse {
@@ -550,7 +533,6 @@ message QueryHookExecutionsRequest {
   bool success_only = 3;              // 是否只查询成功的记录（可选）
   flare.common.v1.TimeRange time_range = 4;
   flare.common.v1.Pagination pagination = 5;
-  flare.common.v1.RequestContext context = 6;
 }
 
 message QueryHookExecutionsResponse {
@@ -581,7 +563,7 @@ service HookExtension {
   rpc NotifyRecall (RecallHookRequest) returns (RecallHookResponse);
   
   // 通知会话生命周期事件（会话创建、更新、删除、归档，异步执行）
-  rpc NotifySessionLifecycle (SessionLifecycleHookRequest) returns (SessionLifecycleHookResponse);
+  rpc NotifyConversationLifecycle (ConversationLifecycleHookRequest) returns (ConversationLifecycleHookResponse);
   
   // 通知在线状态变化（上线、下线、冲突等，异步执行）
   rpc NotifyPresence (PresenceHookRequest) returns (PresenceHookResponse);

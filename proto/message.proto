@@ -3,52 +3,43 @@ syntax = "proto3";
 package flare.message.v1;
 
 import "google/protobuf/timestamp.proto";
+import "common/ack.proto";
+import "common/enums.proto";
 import "common/errors.proto";
+import "common/event.proto";
 import "common/metadata.proto";
 import "common/message.proto";
+import "common/message_content.proto";
+import "common/message_extended.proto";
 
-// -----------------------------------------------------------------------------
 // 消息编排服务
-// -----------------------------------------------------------------------------
-// 职责：消息发送、查询、撤回等核心能力，由 Message Orchestrator 实现
-// 依赖：Storage Service、Hook Engine
-// 设计：所有接口必须携带RequestContext和TenantContext，所有响应包含RpcStatus，支持同步/异步模式，所有操作经过Hook校验
-// 实现：由 flare-message-orchestrator 实现，Gateway 只做代理转发
-//
+// 约定：tenant_id、operator_id、request_id 由 gRPC metadata 注入，请求体可省略（见 common/metadata.proto）。
 
 // -----------------------------------------------------------------------------
-// 消息发送相关消息
+// 消息发送相关
 // -----------------------------------------------------------------------------
 
 // 发送消息请求
 message SendMessageRequest {
   // 会话ID，标识消息发送到哪个会话
-  // 格式：{session_type}:{session_id}，如 "single:user-10001-user-10002"
+  // 格式：{conversation_type}:{conversation_id}，如 "single:user-10001-user-10002"
   // 必需字段，不能为空
-  string session_id = 1;
+  string conversation_id = 1;
   
   // 消息内容，包含消息类型、内容、元数据等
   // 必需字段，不能为空
   // 消息大小限制：单条消息最大64KB
-  // 注意：消息必须包含 session_id（IM核心概念）
+  // 注意：消息必须包含 conversation_id（IM核心概念）
   flare.common.v1.Message message = 2;
-  oneof payload {
-    flare.common.v1.UnifiedMessage unified_message = 9;
-  }
+  // oneof payload {
+  //   flare.common.v1.UnifiedMessage unified_message = 9;
+  // }
   
   // 是否同步等待持久化
   // true: 等待消息完全持久化后返回，延迟较高但保证持久化成功
   // false: 立即返回，延迟较低但无法保证持久化成功（默认）
   // 建议：非关键路径使用false，关键路径使用true
   bool sync = 3;
-  
-  // 请求上下文，包含请求追踪、用户信息、设备信息
-  // 必需字段，不能为空
-  flare.common.v1.RequestContext context = 4;
-  
-  // 租户上下文，包含租户信息，用于租户隔离
-  // 必需字段，不能为空
-  flare.common.v1.TenantContext tenant = 5;
 }
 
 // 发送消息响应
@@ -58,24 +49,24 @@ message SendMessageResponse {
   // false: 发送失败，查看status获取错误信息
   bool success = 1;
   
-  // 消息ID，全局唯一标识符
-  // 格式：{tenant_id}:{timestamp}:{random}，如 "tenant-a:1234567890:abc123"
-  // 成功时返回，用于后续查询和操作
-  string message_id = 2;
+  // 服务端生成的消息ID（server_id），全局唯一标识符
+  string server_msg_id = 2;
+
+  // 服务端生成的消息seq
+  uint64 seq =  3;               
   
   // 发送时间，消息发送的时间戳
-  // 格式：RFC3339格式，如 "2025-01-01T00:00:00Z"
-  google.protobuf.Timestamp sent_at = 3;
+  google.protobuf.Timestamp sent_at = 4;
   
   // 消息时间线信息
   // 包含消息的持久化时间、投递时间、已读时间等
-  flare.common.v1.MessageTimeline timeline = 4;
-  // 新结构的消息（可选）
-  flare.common.v1.UnifiedMessage unified_message = 6;
+  flare.common.v1.MessageTimeline timeline = 5;
+  // 新结构的消息（可选）- 暂未定义
+  // flare.common.v1.UnifiedMessage unified_message = 6;
   
   // RPC状态，包含错误码和错误信息
   // ERROR_CODE_OK表示成功，其他值表示失败
-  flare.common.v1.RpcStatus status = 5;
+  flare.common.v1.RpcStatus status = 7;
 }
 
 // 批量发送消息请求
@@ -127,13 +118,13 @@ message FailedMessage {
 // 发送系统消息请求
 message SendSystemMessageRequest {
   // 会话ID，标识消息发送到哪个会话
-  // 格式：{session_type}:{session_id}
+  // 格式：{conversation_type}:{conversation_id}
   // 必需字段，不能为空
-  string session_id = 1;
+  string conversation_id = 1;
   
   // 消息内容，包含消息类型、内容、元数据等
   // 必需字段，不能为空
-  // 注意：消息必须包含 session_id（IM核心概念）
+  // 注意：消息必须包含 conversation_id（IM核心概念）
   flare.common.v1.Message message = 2;
   
   // 系统消息类型
@@ -142,13 +133,7 @@ message SendSystemMessageRequest {
   // 用于业务系统识别和处理不同类型的系统消息
   string system_message_type = 3;
   
-  // 请求上下文，包含请求追踪、用户信息、设备信息
-  // 必需字段，不能为空
-  flare.common.v1.RequestContext context = 4;
   
-  // 租户上下文，包含租户信息，用于租户隔离
-  // 必需字段，不能为空
-  flare.common.v1.TenantContext tenant = 5;
 }
 
 // 发送系统消息响应
@@ -171,9 +156,9 @@ message SendSystemMessageResponse {
 // 查询消息请求
 message QueryMessagesRequest {
   // 会话ID，标识要查询的会话
-  // 格式：{session_type}:{session_id}
+  // 格式：{conversation_type}:{conversation_id}
   // 必需字段，不能为空
-  string session_id = 1;
+  string conversation_id = 1;
   
   // 起始时间（毫秒时间戳）
   // 查询范围的起始时间（包含），Unix时间戳（毫秒）
@@ -195,14 +180,6 @@ message QueryMessagesRequest {
   // 格式：服务端生成的游标字符串，客户端不应解析其内容
   string cursor = 5;
   
-  // 请求上下文，包含请求追踪、用户信息、设备信息
-  // 必需字段，不能为空
-  flare.common.v1.RequestContext context = 6;
-  
-  // 租户上下文，包含租户信息，用于租户隔离
-  // 必需字段，不能为空
-  flare.common.v1.TenantContext tenant = 7;
-  
   // 分页信息
   // 可选字段，用于分页配置
   flare.common.v1.Pagination pagination = 8;
@@ -213,8 +190,8 @@ message QueryMessagesResponse {
   // 消息列表
   // 符合条件的消息列表，按时间倒序排列（最新的在前）
   repeated flare.common.v1.Message messages = 1;
-  // 新结构的消息列表（可选）
-  repeated flare.common.v1.UnifiedMessage unified_messages = 6;
+  // 新结构的消息列表（可选）- 暂未定义
+  // repeated flare.common.v1.UnifiedMessage unified_messages = 6;
   
   // 下一页游标
   // 用于获取下一页数据的游标，空表示没有更多数据
@@ -235,13 +212,6 @@ message QueryMessagesResponse {
 
 // 搜索消息请求
 message SearchMessagesRequest {
-  // 请求上下文，包含请求追踪、用户信息、设备信息
-  // 必需字段，不能为空
-  flare.common.v1.RequestContext context = 1;
-  
-  // 租户上下文，包含租户信息，用于租户隔离
-  // 必需字段，不能为空
-  flare.common.v1.TenantContext tenant = 2;
   
   // 过滤条件列表
   // 用于构建搜索条件，多个条件之间是AND关系
@@ -267,8 +237,8 @@ message SearchMessagesResponse {
   // 搜索结果消息列表
   // 符合搜索条件的消息列表，按排序规则排列
   repeated flare.common.v1.Message messages = 1;
-  // 新结构的搜索结果（可选）
-  repeated flare.common.v1.UnifiedMessage unified_messages = 4;
+  // 新结构的搜索结果（可选）- 暂未定义
+  // repeated flare.common.v1.UnifiedMessage unified_messages = 4;
   
   // 分页信息
   // 包含分页的详细信息，如总记录数、游标等
@@ -280,13 +250,7 @@ message SearchMessagesResponse {
 
 // 获取消息请求
 message GetMessageRequest {
-  // 请求上下文，包含请求追踪、用户信息、设备信息
-  // 必需字段，不能为空
-  flare.common.v1.RequestContext context = 1;
   
-  // 租户上下文，包含租户信息，用于租户隔离
-  // 必需字段，不能为空
-  flare.common.v1.TenantContext tenant = 2;
   
   // 消息ID，全局唯一标识符
   // 格式：{tenant_id}:{timestamp}:{random}
@@ -299,8 +263,8 @@ message GetMessageResponse {
   // 消息详情
   // 完整的消息信息，包含消息内容、时间线、状态等
   flare.common.v1.Message message = 1;
-  // 新结构消息详情（可选）
-  flare.common.v1.UnifiedMessage unified_message = 3;
+  // 新结构消息详情（可选）- 暂未定义
+  // flare.common.v1.UnifiedMessage unified_message = 3;
   
   // RPC状态，包含错误码和错误信息
   flare.common.v1.RpcStatus status = 2;
@@ -310,36 +274,12 @@ message GetMessageResponse {
 // 消息操作相关消息
 // -----------------------------------------------------------------------------
 
-// 撤回消息请求
+// 撤回消息请求（与 common/event.proto MessageRecallEvent 对齐；operator_id 由 metadata 注入）
 message RecallMessageRequest {
-  // 消息ID，要撤回的消息标识符
-  // 格式：{tenant_id}:{timestamp}:{random}
-  // 必需字段，不能为空
-  string message_id = 1;
-  
-  // 操作者ID，执行撤回操作的用户ID
-  // 必需字段，不能为空
-  // 只有消息发送者或管理员可以撤回
-  string operator_id = 2;
-  
-  // 撤回原因
-  // 可选字段，说明撤回的原因，用于审计和问题排查
-  // 示例："用户主动撤回"、"内容错误"
-  string reason = 3;
-  
-  // 撤回时间限制（秒）
-  // 消息发送后多长时间内可以撤回，超过该时间不能撤回
-  // 可选字段，不提供时使用系统默认值（如120秒）
-  // 单位：秒
-  int32 recall_time_limit_seconds = 4;
-  
-  // 请求上下文，包含请求追踪、用户信息、设备信息
-  // 必需字段，不能为空
-  flare.common.v1.RequestContext context = 5;
-  
-  // 租户上下文，包含租户信息，用于租户隔离
-  // 必需字段，不能为空
-  flare.common.v1.TenantContext tenant = 6;
+  string message_id = 1;  // 即 server_msg_id，必填
+  string reason = 2;
+  int32 recall_time_limit_seconds = 3;  // 可选，不填用系统默认
+  string conversation_id = 4;  // 可选；当服务端未配置 StorageReader 时由客户端提供，用于解析会话
 }
 
 // 撤回消息响应
@@ -361,25 +301,13 @@ message RecallMessageResponse {
   flare.common.v1.RpcStatus status = 4;
 }
 
-// 删除消息请求
+// 删除消息请求（与 MessageDeleteEvent 对齐；operator 由 metadata 注入）
 message DeleteMessageRequest {
-  // 会话ID，标识要删除消息的会话
-  // 格式：{session_type}:{session_id}
-  // 必需字段，不能为空
-  string session_id = 1;
-  
-  // 消息ID列表，要删除的消息标识符列表
-  // 最多支持100条消息，超过限制会返回错误
-  // 必需字段，不能为空
-  repeated string message_ids = 2;
-  
-  // 请求上下文，包含请求追踪、用户信息、设备信息
-  // 必需字段，不能为空
-  flare.common.v1.RequestContext context = 3;
-  
-  // 租户上下文，包含租户信息，用于租户隔离
-  // 必需字段，不能为空
-  flare.common.v1.TenantContext tenant = 4;
+  string conversation_id = 1;
+  repeated string message_ids = 2;  // 最多 100
+  flare.common.v1.DeleteType delete_type = 3;
+  string reason = 4;
+  bool notify_others = 5;
 }
 
 // 删除消息响应
@@ -397,24 +325,11 @@ message DeleteMessageResponse {
   flare.common.v1.RpcStatus status = 3;
 }
 
-// 标记消息已读请求
+// 标记消息已读请求（与 ReadReceiptEvent 对齐；user_id 由 metadata 注入）
 message MarkMessageReadRequest {
-  // 消息ID，要标记已读的消息标识符
-  // 格式：{tenant_id}:{timestamp}:{random}
-  // 必需字段，不能为空
   string message_id = 1;
-  
-  // 用户ID，标记已读的用户标识符
-  // 必需字段，不能为空
-  string user_id = 2;
-  
-  // 请求上下文，包含请求追踪、用户信息、设备信息
-  // 必需字段，不能为空
-  flare.common.v1.RequestContext context = 3;
-  
-  // 租户上下文，包含租户信息，用于租户隔离
-  // 必需字段，不能为空
-  flare.common.v1.TenantContext tenant = 4;
+  google.protobuf.Timestamp read_at = 2;
+  bool burn_after_read = 3;
 }
 
 // 标记消息已读响应
@@ -446,7 +361,13 @@ message MarkMessageReadResponse {
 // -----------------------------------------------------------------------------
 
 service MessageService {
+  // ============================================================================
+  // 1. 发送相关（Send）
+  // ============================================================================
+  
   // 发送单条消息（将消息发送到指定会话，经过PreSend Hook校验，支持同步/异步模式）
+  // 注意：回复消息通过设置 Message.quote 字段并调用 SendMessage 实现
+  // 注意：引用消息通过设置 Message.quote 字段并调用 SendMessage 实现
   rpc SendMessage(SendMessageRequest) returns (SendMessageResponse);
   
   // 批量发送消息（一次性发送多条消息，最多100条，每条消息都经过PreSend Hook校验）
@@ -454,6 +375,58 @@ service MessageService {
   
   // 发送系统消息（发送系统消息，跳过PreSend业务校验，需要管理员权限或系统权限）
   rpc SendSystemMessage(SendSystemMessageRequest) returns (SendSystemMessageResponse);
+  
+  // ============================================================================
+  // 2. 操作相关（Operation，与 common/event.proto Event 一一对应）
+  // ============================================================================
+  // 统一入口：ExecuteEvent(Event) 返回 OperationAck；tenant_id/operator_id/request_id 由 metadata 注入。
+  rpc ExecuteEvent(flare.common.v1.Event) returns (flare.common.v1.OperationAck);
+
+  // 撤回消息
+  rpc RecallMessage(RecallMessageRequest) returns (RecallMessageResponse);
+  
+  // 编辑消息（编辑已发送的消息内容，支持编辑历史记录，只有发送者可以编辑）
+  rpc EditMessage(EditMessageRequest) returns (EditMessageResponse);
+  
+  // 删除消息（从指定会话中删除一条或多条消息，最多100条，默认软删除）
+  rpc DeleteMessage(DeleteMessageRequest) returns (DeleteMessageResponse);
+  
+  // 标记消息已读（记录用户对消息的已读状态，支持阅后即焚功能）
+  rpc MarkMessageRead(MarkMessageReadRequest) returns (MarkMessageReadResponse);
+  
+  // 批量标记已读（批量标记多条消息为已读，支持范围操作）
+  rpc BatchMarkMessageRead(BatchMarkMessageReadRequest) returns (BatchMarkMessageReadResponse);
+  
+  // 范围标记已读（标记到指定消息为止的所有消息为已读）
+  rpc MarkMessagesReadUntil(MarkMessagesReadUntilRequest) returns (MarkMessagesReadUntilResponse);
+  
+  // 标记会话已读（标记指定会话的所有未读消息为已读）
+  rpc MarkConversationRead(MarkConversationReadRequest) returns (MarkConversationReadResponse);
+  
+  // 标记全部会话已读（标记用户在所有会话中的所有未读消息为已读）
+  rpc MarkAllConversationsRead(MarkAllConversationsReadRequest) returns (MarkAllConversationsReadResponse);
+  
+  // 添加表情反应（添加表情反应到消息，支持多用户反应）
+  rpc AddReaction(AddReactionRequest) returns (AddReactionResponse);
+  
+  // 移除表情反应（移除消息上的表情反应）
+  rpc RemoveReaction(RemoveReactionRequest) returns (RemoveReactionResponse);
+  
+  // 置顶消息（置顶消息到会话顶部，支持设置到期时间）
+  rpc PinMessage(PinMessageRequest) returns (PinMessageResponse);
+  
+  // 取消置顶（取消消息的置顶状态）
+  rpc UnpinMessage(UnpinMessageRequest) returns (UnpinMessageResponse);
+  
+  // 标记消息（标记消息为重要/待办等，支持自定义标记）
+  rpc MarkMessage(MarkMessageRequest) returns (MarkMessageResponse);
+  
+  // 取消标记（取消消息的标记，支持取消特定类型或所有标记）
+  rpc UnmarkMessage(UnmarkMessageRequest) returns (UnmarkMessageResponse);
+  
+  // ============================================================================
+  // 3. 查询相关（Query）
+  // ============================================================================
   
   // 查询会话消息（根据会话ID、时间范围等条件查询消息列表，支持分页和游标）
   rpc QueryMessages(QueryMessagesRequest) returns (QueryMessagesResponse);
@@ -464,55 +437,59 @@ service MessageService {
   // 获取单条消息（根据消息ID获取完整的消息详情）
   rpc GetMessage(GetMessageRequest) returns (GetMessageResponse);
   
-  // 撤回消息（撤回已发送的消息，支持设置撤回时间限制，只有发送者或管理员可以撤回）
-  rpc RecallMessage(RecallMessageRequest) returns (RecallMessageResponse);
+  // 获取置顶消息列表（获取会话中的置顶消息列表）
+  rpc GetPinnedMessages(GetPinnedMessagesRequest) returns (GetPinnedMessagesResponse);
   
-  // 删除消息（从指定会话中删除一条或多条消息，最多100条，默认逻辑删除）
-  rpc DeleteMessage(DeleteMessageRequest) returns (DeleteMessageResponse);
+  // 获取标记消息列表（获取用户的标记消息列表，支持按标记类型筛选）
+  rpc GetMarkedMessages(GetMarkedMessagesRequest) returns (GetMarkedMessagesResponse);
   
-  // 标记消息已读（记录用户对消息的已读状态，支持阅后即焚功能）
-  rpc MarkMessageRead(MarkMessageReadRequest) returns (MarkMessageReadResponse);
-
-  // 编辑消息（通过属性表达编辑信息，遵循统一消息结构）
-  rpc EditMessage(EditMessageRequest) returns (EditMessageResponse);
-
-  // 添加表情反应（以属性记录计数和操作人）
-  rpc AddReaction(AddReactionRequest) returns (AddReactionResponse);
-
-  // 移除表情反应（以属性更新计数）
-  rpc RemoveReaction(RemoveReactionRequest) returns (RemoveReactionResponse);
-
-  // 回复消息（发送一条带有 reply_to 属性的新消息，并更新原消息的回复计数）
-  rpc ReplyMessage(ReplyMessageRequest) returns (ReplyMessageResponse);
+  // 获取话题列表（获取会话中的所有话题列表）
+  rpc GetThreads(GetThreadsRequest) returns (GetThreadsResponse);
   
-  // 在线程中回复（发送一条带有 thread_id 属性的新消息，并更新线程计数）
-  rpc AddThreadReply(AddThreadReplyRequest) returns (AddThreadReplyResponse);
+  // 获取话题回复列表（获取话题中的所有回复消息）
+  rpc GetThreadReplies(GetThreadRepliesRequest) returns (GetThreadRepliesResponse);
+  
 }
 
-// 编辑消息请求
+// 编辑消息请求（与 MessageEditEvent 对齐；operator_id 由 metadata 注入）
 message EditMessageRequest {
   string message_id = 1;
-  string operator_id = 2;
-  map<string, string> attributes = 3; // 如 edited_text、edited_at、edit_version
-  repeated string tags = 4;
-  flare.common.v1.RequestContext context = 5;
-  flare.common.v1.TenantContext tenant = 6;
+  flare.common.v1.MessageContent new_content = 2;
+  int32 edit_version = 3;
+  string reason = 4;
+  bool show_edited_mark = 5;
+  string conversation_id = 6;  // 可选；当服务端未配置 StorageReader 时由客户端提供，用于解析会话
 }
 
 // 编辑消息响应
 message EditMessageResponse {
+  // 是否编辑成功
+  // true: 编辑成功，消息内容已更新
+  // false: 编辑失败，查看error_message获取失败原因
   bool success = 1;
+  
+  // 错误消息
+  // 编辑失败时的错误描述，成功时为空
   string error_message = 2;
-  flare.common.v1.RpcStatus status = 3;
+  
+  // 编辑后的消息ID（与请求中的message_id相同）
+  string message_id = 3;
+  
+  // 编辑版本号（更新后的版本号）
+  int32 edit_version = 4;
+  
+  // 编辑时间
+  // 消息被编辑的时间戳，格式：RFC3339格式
+  google.protobuf.Timestamp edited_at = 5;
+  
+  // RPC状态，包含错误码和错误信息
+  flare.common.v1.RpcStatus status = 6;
 }
 
-// 添加表情反应请求
+// 添加表情反应请求（与 ReactionEvent 对齐；user_id 由 metadata 注入）
 message AddReactionRequest {
   string message_id = 1;
-  string user_id = 2;
-  string emoji = 3;
-  flare.common.v1.RequestContext context = 4;
-  flare.common.v1.TenantContext tenant = 5;
+  string emoji = 2;
 }
 
 // 添加表情反应响应
@@ -523,13 +500,10 @@ message AddReactionResponse {
   flare.common.v1.RpcStatus status = 4;
 }
 
-// 移除表情反应请求
+// 移除表情反应请求（user_id 由 metadata 注入）
 message RemoveReactionRequest {
   string message_id = 1;
-  string user_id = 2;
-  string emoji = 3;
-  flare.common.v1.RequestContext context = 4;
-  flare.common.v1.TenantContext tenant = 5;
+  string emoji = 2;
 }
 
 // 移除表情反应响应
@@ -540,44 +514,379 @@ message RemoveReactionResponse {
   flare.common.v1.RpcStatus status = 4;
 }
 
-// 回复消息请求
-message ReplyMessageRequest {
-  string session_id = 1; // 目标会话
-  string reply_to_message_id = 2; // 被回复的消息ID
-  flare.common.v1.Message message = 3; // 回复的消息内容（attributes.reply_to 将由服务填充）
-  oneof payload {
-    flare.common.v1.UnifiedMessage unified_message = 9;
-  }
-  bool sync = 4;
-  flare.common.v1.RequestContext context = 5;
-  flare.common.v1.TenantContext tenant = 6;
+// -----------------------------------------------------------------------------
+// 回复/引用消息说明
+// -----------------------------------------------------------------------------
+// 回复消息和引用消息现在统一通过 Message.quote 字段处理：
+// 1. 客户端创建新消息，设置 Message.quote.quoted_message_id（必需）
+// 2. 可选：设置 Message.quote.quoted_sender_id、quoted_text_preview 等
+// 3. 客户端调用 SendMessage 发送消息
+// 4. 服务端只负责存储和分发消息
+//
+// 示例（回复消息）：
+//   message.quote.quoted_message_id = "msg_123"
+//   message.quote.quoted_sender_id = "user_456"
+//   message.quote.quoted_text_preview = "原消息预览"
+//   SendMessage(conversation_id, message)
+//
+// -----------------------------------------------------------------------------
+// 转发说明
+// -----------------------------------------------------------------------------
+// 转发由客户端完成，不需要专门的服务端接口：
+// 1. 客户端获取要转发的消息内容
+// 2. 客户端创建新消息，使用 ForwardContent 作为消息内容
+// 3. 客户端调用 SendMessage 发送到目标会话
+// 4. 服务端只负责存储和分发转发后的消息
+//
+// 示例：
+//   message.content.forward.message_ids = ["msg1", "msg2"]
+//   message.content.forward.forward_reason = "重要信息"
+//   SendMessage(target_conversation_id, message)
+//
+// -----------------------------------------------------------------------------
+// 话题回复说明
+// -----------------------------------------------------------------------------
+// 话题回复由客户端完成，不需要专门的服务端接口：
+// 1. 客户端创建新消息，设置 attributes["thread_id"] = thread_id
+// 2. 客户端调用 SendMessage 发送消息
+// 3. 服务端只负责存储和分发消息
+//
+// 示例：
+//   message.attributes["thread_id"] = "thread_123"
+//   SendMessage(conversation_id, message)
+//
+// 话题根消息：
+//   message.message_type = MESSAGE_TYPE_THREAD
+//   message.content.thread.thread_id = "thread_123"
+//   message.content.thread.thread_title = "话题标题"
+//   message.content.thread.root_content = {...}
+
+// -----------------------------------------------------------------------------
+// 置顶消息相关
+// -----------------------------------------------------------------------------
+
+// 置顶消息请求（与 PinEvent 对齐；operator_id 由 metadata 注入）
+message PinMessageRequest {
+  string message_id = 1;
+  string reason = 2;
+  google.protobuf.Timestamp expire_at = 3;
 }
 
-// 回复消息响应
-message ReplyMessageResponse {
+// 置顶消息响应
+message PinMessageResponse {
+  // 是否置顶成功
   bool success = 1;
-  string message_id = 2; // 新回复消息ID
-  string error_message = 3;
+  
+  // 错误消息
+  string error_message = 2;
+  
+  // 置顶时间
+  google.protobuf.Timestamp pinned_at = 3;
+  
+  // RPC状态
   flare.common.v1.RpcStatus status = 4;
 }
 
-// 线程回复请求
-message AddThreadReplyRequest {
-  string session_id = 1;
-  string thread_id = 2; // 线程ID（通常为首条消息ID）
-  flare.common.v1.Message message = 3; // 回复消息（attributes.thread_id 将由服务填充）
-  oneof payload {
-    flare.common.v1.UnifiedMessage unified_message = 9;
-  }
-  bool sync = 4;
-  flare.common.v1.RequestContext context = 5;
-  flare.common.v1.TenantContext tenant = 6;
+// 取消置顶请求（与 UnpinEvent 对齐；operator_id 由 metadata 注入）
+message UnpinMessageRequest {
+  string message_id = 1;
 }
 
-// 线程回复响应
-message AddThreadReplyResponse {
+// 取消置顶响应
+message UnpinMessageResponse {
+  // 是否取消成功
   bool success = 1;
-  string message_id = 2;
-  string error_message = 3;
+  
+  // 错误消息
+  string error_message = 2;
+  
+  // RPC状态
+  flare.common.v1.RpcStatus status = 3;
+}
+
+
+// -----------------------------------------------------------------------------
+// 标记消息相关
+// -----------------------------------------------------------------------------
+
+// 标记消息请求（与 MarkEvent 对齐；user_id 由 metadata 注入）
+message MarkMessageRequest {
+  string message_id = 1;
+  flare.common.v1.MarkType mark_type = 2;
+  string color = 3;
+}
+
+// 标记消息响应
+message MarkMessageResponse {
+  // 是否标记成功
+  bool success = 1;
+  
+  // 错误消息
+  string error_message = 2;
+  
+  // 标记时间
+  google.protobuf.Timestamp marked_at = 3;
+  
+  // RPC状态
+  flare.common.v1.RpcStatus status = 4;
+}
+
+// 取消标记请求（与 UnmarkEvent 对齐；user_id 由 metadata 注入）
+message UnmarkMessageRequest {
+  string message_id = 1;
+  flare.common.v1.MarkType mark_type = 2;  // 空表示取消该消息全部标记
+}
+
+// 取消标记响应
+message UnmarkMessageResponse {
+  // 是否取消成功
+  bool success = 1;
+  
+  // 错误消息
+  string error_message = 2;
+  
+  // RPC状态
+  flare.common.v1.RpcStatus status = 3;
+}
+
+// -----------------------------------------------------------------------------
+// 批量已读相关
+// -----------------------------------------------------------------------------
+
+// 批量标记已读请求（user_id 由 metadata 注入）
+message BatchMarkMessageReadRequest {
+  string conversation_id = 1;
+  repeated string message_ids = 2;  // 空则标记会话内全部未读
+  google.protobuf.Timestamp read_at = 3;
+  bool burn_after_read = 4;
+}
+
+// 范围标记已读请求（user_id 由 metadata 注入）
+message MarkMessagesReadUntilRequest {
+  string conversation_id = 1;
+  string until_message_id = 2;
+  google.protobuf.Timestamp read_at = 3;
+  bool burn_after_read = 4;
+}
+
+// 范围标记已读响应
+message MarkMessagesReadUntilResponse {
+  // 是否标记成功
+  bool success = 1;
+  
+  // 错误消息
+  string error_message = 2;
+  
+  // 已读的消息数量
+  int32 read_count = 3;
+  
+  // 已读时间
+  google.protobuf.Timestamp read_at = 4;
+  
+  // RPC状态
+  flare.common.v1.RpcStatus status = 5;
+}
+
+// 批量标记已读响应
+message BatchMarkMessageReadResponse {
+  // 是否标记成功
+  bool success = 1;
+  
+  // 错误消息
+  string error_message = 2;
+  
+  // 已读的消息数量
+  int32 read_count = 3;
+  
+  // 已读时间
+  google.protobuf.Timestamp read_at = 4;
+  
+  // RPC状态
+  flare.common.v1.RpcStatus status = 5;
+}
+
+// 标记会话已读请求（user_id 由 metadata 注入）
+message MarkConversationReadRequest {
+  string conversation_id = 1;
+  google.protobuf.Timestamp read_at = 2;
+  bool burn_after_read = 3;
+}
+
+// 标记会话已读响应
+message MarkConversationReadResponse {
+  // 是否标记成功
+  // true: 标记成功，会话中所有未读消息已标记为已读
+  // false: 标记失败，查看error_message获取失败原因
+  bool success = 1;
+  
+  // 错误消息
+  // 标记失败时的错误描述，成功时为空
+  string error_message = 2;
+  
+  // 已读的消息数量
+  // 本次标记为已读的消息数量
+  int32 read_count = 3;
+  
+  // 已读时间
+  // 消息被标记为已读的时间戳
+  google.protobuf.Timestamp read_at = 4;
+  
+  // 会话的最后一条已读消息ID（可选）
+  // 用于客户端更新会话的已读位置
+  string last_read_message_id = 5;
+  
+  // RPC状态，包含错误码和错误信息
+  flare.common.v1.RpcStatus status = 6;
+}
+
+// 标记全部会话已读请求（user_id 由 metadata 注入）
+message MarkAllConversationsReadRequest {
+  google.protobuf.Timestamp read_at = 1;
+  bool burn_after_read = 2;
+  repeated string conversation_types = 3;  // 空表示全部类型
+}
+
+// 标记全部会话已读响应
+message MarkAllConversationsReadResponse {
+  // 是否标记成功
+  // true: 标记成功，所有会话中的未读消息已标记为已读
+  // false: 标记失败，查看error_message获取失败原因
+  bool success = 1;
+  
+  // 错误消息
+  // 标记失败时的错误描述，成功时为空
+  string error_message = 2;
+  
+  // 已读的会话数量
+  // 本次标记为已读的会话数量
+  int32 conversation_count = 3;
+  
+  // 已读的消息总数
+  // 所有会话中本次标记为已读的消息总数
+  int32 total_read_count = 4;
+  
+  // 已读时间
+  // 消息被标记为已读的时间戳
+  google.protobuf.Timestamp read_at = 5;
+  
+  // 各会话的已读统计信息（可选）
+  // 包含每个会话的已读消息数量
+  repeated ConversationReadStat conversation_stats = 6;
+  
+  // RPC状态，包含错误码和错误信息
+  flare.common.v1.RpcStatus status = 7;
+}
+
+// 会话已读统计信息
+message ConversationReadStat {
+  // 会话ID
+  string conversation_id = 1;
+  
+  // 已读的消息数量
+  int32 read_count = 2;
+  
+  // 最后一条已读消息ID
+  string last_read_message_id = 3;
+}
+
+// -----------------------------------------------------------------------------
+// 置顶消息查询相关
+// -----------------------------------------------------------------------------
+
+// 获取置顶消息列表请求
+message GetPinnedMessagesRequest {
+  // 会话ID，要查询的会话
+  string conversation_id = 1;
+  
+  // 分页信息（可选）
+  flare.common.v1.Pagination pagination = 2;
+}
+
+// 获取置顶消息列表响应
+message GetPinnedMessagesResponse {
+  // 置顶消息列表
+  repeated flare.common.v1.Message messages = 1;
+  
+  // 置顶信息列表
+  repeated flare.common.v1.PinnedMessageInfo pinned_infos = 2;
+  
+  // 分页信息
+  flare.common.v1.Pagination pagination = 3;
+  
+  // RPC状态
+  flare.common.v1.RpcStatus status = 4;
+}
+
+
+// -----------------------------------------------------------------------------
+// 标记消息查询相关
+// -----------------------------------------------------------------------------
+
+// 获取标记消息列表请求（user_id 由 metadata 注入）
+message GetMarkedMessagesRequest {
+  flare.common.v1.MarkType mark_type = 1;
+  flare.common.v1.Pagination pagination = 2;
+}
+
+// 获取标记消息列表响应
+message GetMarkedMessagesResponse {
+  // 标记消息列表
+  repeated flare.common.v1.Message messages = 1;
+  
+  // 标记信息列表
+  repeated flare.common.v1.MarkedMessageInfo marked_infos = 2;
+  
+  // 分页信息
+  flare.common.v1.Pagination pagination = 3;
+  
+  // RPC状态
+  flare.common.v1.RpcStatus status = 4;
+}
+
+// -----------------------------------------------------------------------------
+// 话题查询相关
+// -----------------------------------------------------------------------------
+
+// 获取话题列表请求
+message GetThreadsRequest {
+  string conversation_id = 1;
+  flare.common.v1.ThreadStatus status = 2;
+  
+  // 分页信息（可选）
+  flare.common.v1.Pagination pagination = 3;
+}
+
+// 获取话题列表响应
+message GetThreadsResponse {
+  // 话题列表（聚合视图）
+  repeated flare.common.v1.ThreadInfo threads = 1;
+  
+  // 分页信息
+  flare.common.v1.Pagination pagination = 2;
+  
+  // RPC状态
+  flare.common.v1.RpcStatus status = 3;
+}
+
+// 获取话题回复列表请求
+message GetThreadRepliesRequest {
+  string thread_id = 1;
+  
+  // 分页信息（可选）
+  flare.common.v1.Pagination pagination = 2;
+}
+
+// 获取话题回复列表响应
+message GetThreadRepliesResponse {
+  // 回复消息列表（包含话题根消息和所有回复）
+  repeated flare.common.v1.Message messages = 1;
+  
+  // 话题信息（聚合视图）
+  flare.common.v1.ThreadInfo thread_info = 2;
+  
+  // 分页信息
+  flare.common.v1.Pagination pagination = 3;
+  
+  // RPC状态
   flare.common.v1.RpcStatus status = 4;
 }

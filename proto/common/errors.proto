@@ -73,7 +73,7 @@ message QuotaFailure {
 
 // 资源冲突信息
 message ConflictInfo {
-  string resource_type = 1;     // 资源类型（device/session/message等）
+  string resource_type = 1;     // 资源类型（device/conversation/message等）
   string resource_id = 2;        // 资源ID
   string owning_actor = 3;      // 当前拥有者
   string reason = 4;            // 冲突原因
@@ -88,8 +88,8 @@ message CompatibilityHint {
 
 // 通用错误详情集合（提供结构化的错误信息）
 message ErrorDetail {
-  string domain = 1;                    // 错误域（message/session/auth等）
-  string reason = 2;                    // 错误原因（session_not_found/quota_exceeded等）
+  string domain = 1;                    // 错误域（message/conversation/auth等）
+  string reason = 2;                    // 错误原因（conversation_not_found/quota_exceeded等）
   string message = 3;                   // 错误消息（人类可读）
   map<string, string> metadata = 4;     // 扩展元数据
 

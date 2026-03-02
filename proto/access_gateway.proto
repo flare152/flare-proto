@@ -2,14 +2,16 @@ syntax = "proto3";
 
 package flare.access_gateway.v1;
 
+option go_package = "github.com/flare-labs/flare/proto/access_gateway;access_gateway";
+
 import "google/protobuf/timestamp.proto";
 import "common/errors.proto";
 import "common/metadata.proto";
 import "common/message.proto";
+import "common/ack.proto";
+import "common/transport.proto";
 
-// -----------------------------------------------------------------------------
-// AccessGateway：业务系统推送消息给客户端的接口
-// -----------------------------------------------------------------------------
+// AccessGateway：业务系统推送消息给客户端。约定：tenant_id、request_id 可由 gRPC metadata 注入。
 // 职责：为业务系统提供推送消息给客户端的 gRPC 接口
 // 依赖：common/errors.proto, common/metadata.proto, storage.proto
 //
@@ -25,13 +27,11 @@ import "common/message.proto";
 
 // 推送消息请求（业务系统调用）
 message PushMessageRequest {
-  flare.common.v1.RequestContext context = 1;
-  flare.common.v1.TenantContext tenant = 2;
   
   // 目标用户ID（支持多个用户，批量推送）
   repeated string target_user_ids = 3;
   
-  // 消息内容（包含session_id，IM核心概念）
+  // 消息内容（包含conversation_id，IM核心概念）
   flare.common.v1.Message message = 4;
   
   // 推送选项
@@ -39,6 +39,8 @@ message PushMessageRequest {
   
   // 元数据
   map<string, string> metadata = 6;
+
+  string request_id = 7;  // 可选，可由 metadata 注入
 }
 
 // 推送选项
@@ -72,7 +74,27 @@ message PushMessageResponse {
   
   // 统计信息
   PushStatistics statistics = 3;
+
+  // 回显请求ID（业务系统用于关联）
+  string request_id = 4;
 }
+
+// 推送客户端发送ACK（业务系统回传给客户端）
+message PushAckRequest {
+  repeated string target_user_ids = 3;                 // 目标用户
+  flare.common.v1.SendEnvelopeAck ack = 4;             // 使用传输层ACK模型
+  map<string, string> metadata = 5;                    // 扩展元数据
+  string request_id = 6;                               // 业务请求ID
+}
+
+// 推送自定义业务数据（透传到客户端）
+message PushCustomRequest {
+  repeated string target_user_ids = 3;                 // 目标用户
+  flare.common.v1.CustomPushData custom = 4;           // 使用传输层自定义推送载体
+  map<string, string> metadata = 5;                    // 扩展元数据
+  string request_id = 6;                               // 业务请求ID
+}
+
 
 // 单个用户推送结果
 message PushResult {
@@ -127,8 +149,6 @@ message PushStatistics {
 
 // 批量推送消息请求
 message BatchPushMessageRequest {
-  flare.common.v1.RequestContext context = 1;
-  flare.common.v1.TenantContext tenant = 2;
   
   // 推送任务列表
   repeated PushMessageRequest pushes = 3;
@@ -183,13 +203,68 @@ message BatchPushStatistics {
 }
 
 // -----------------------------------------------------------------------------
+// 信令订阅发布相关消息（从 signaling.proto 迁移）
+// -----------------------------------------------------------------------------
+
+// 订阅请求
+message SubscribeRequest {
+  string user_id = 3;
+  repeated Subscription subscriptions = 4;
+}
+
+// 订阅主题
+message Subscription {
+  string topic = 1;
+  map<string, string> params = 2;
+}
+
+// 订阅响应
+message SubscribeResponse {
+  repeated Subscription granted = 1;
+  flare.common.v1.RpcStatus status = 2;
+}
+
+// 取消订阅请求
+message UnsubscribeRequest {
+  string user_id = 3;
+  repeated string topics = 4;
+}
+
+// 取消订阅响应
+message UnsubscribeResponse {
+  flare.common.v1.RpcStatus status = 1;
+}
+
+// 发布信令请求
+message PublishSignalRequest {
+  SignalEnvelope envelope = 3;
+}
+
+// 发布信令响应
+message PublishSignalResponse {
+  flare.common.v1.RpcStatus status = 1;
+}
+
+// 信令消息封装
+message SignalEnvelope {
+  string topic = 1;                        // 主题
+  string from = 2;                         // 发送者
+  repeated string targets = 3;             // 目标用户列表
+  bytes payload = 4;                       // 消息载荷
+  map<string, string> metadata = 5;        // 元数据
+}
+
+// -----------------------------------------------------------------------------
+// 推送回执订阅（业务系统获取投递状态/客户端ACK聚合）
+// -----------------------------------------------------------------------------
+
+
+// -----------------------------------------------------------------------------
 // 连接查询相关消息
 // -----------------------------------------------------------------------------
 
 // 查询用户连接状态请求
 message QueryUserConnectionsRequest {
-  flare.common.v1.RequestContext context = 1;
-  flare.common.v1.TenantContext tenant = 2;
   
   // 用户ID列表
   repeated string user_ids = 3;
@@ -247,6 +322,12 @@ service AccessGateway {
   // 支持单用户或多用户批量推送
   rpc PushMessage(PushMessageRequest) returns (PushMessageResponse);
   
+  // 推送客户端发送ACK（业务系统触发回传）
+  rpc PushAck(PushAckRequest) returns (PushMessageResponse);
+  
+  // 推送自定义业务数据（透传到客户端）
+  rpc PushCustom(PushCustomRequest) returns (PushMessageResponse);
+  
   // 批量推送消息给客户端（业务系统调用）
   // 支持多个推送任务并行执行
   rpc BatchPushMessage(BatchPushMessageRequest) returns (BatchPushMessageResponse);
@@ -254,5 +335,18 @@ service AccessGateway {
   // 查询用户连接状态（业务系统调用）
   // 查询指定用户的连接信息（在线状态、连接数、设备信息等）
   rpc QueryUserConnections(QueryUserConnectionsRequest) returns (QueryUserConnectionsResponse);
+  
+  // -----------------------------------------------------------------------------
+  // 信令订阅发布（Pub/Sub）- Gateway 层实现
+  // -----------------------------------------------------------------------------
+  
+  // 订阅频道/主题（订阅指定的频道或主题，接收相关信令消息）
+  rpc Subscribe(SubscribeRequest) returns (SubscribeResponse);
+  
+  // 取消订阅（取消对指定频道或主题的订阅）
+  rpc Unsubscribe(UnsubscribeRequest) returns (UnsubscribeResponse);
+  
+  // 发布信令消息（向订阅了指定主题的用户发布信令消息）
+  rpc PublishSignal(PublishSignalRequest) returns (PublishSignalResponse);
 }
 
