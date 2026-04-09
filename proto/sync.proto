@@ -1,0 +1,371 @@
+syntax = "proto3";
+
+package flare.common.v1;
+
+import "google/protobuf/timestamp.proto";
+import "conversation.proto";
+import "errors.proto";
+import "event.proto";
+import "message.proto";
+
+// =============================================================================
+// Sync BC - 会话与消息同步（增量为主，一会话一流）
+// =============================================================================
+// 对齐 im_sync_design.md / im_sync_best_practice.md：
+// - 初始化同步 = Snapshot（状态） + Event（变化） + ACK（可靠性）
+// - 事件分级：强一致回放 / 可聚合 / 不参与历史
+// - 断线续传：seq 缺口 → 恢复建议（重拉快照或续拉事件）
+// - 幂等：客户端丢弃 seq <= lastApplied 的事件
+//
+// 上行 Sync（kind + payload）；下行 SyncRes（status + payload）。
+// user_id 由服务端从认证上下文注入，勿在报文重复传递。
+//
+// 会话读模型类型见 common/conversation.proto（ConversationSummary、ConversationDetail、ConversationPatch 等）。
+
+// -----------------------------------------------------------------------------
+// 事件分级策略（best_practice §3）— 供客户端过滤、服务端文档与监控对齐
+// -----------------------------------------------------------------------------
+
+/// 事件在「历史同步 / 断线续传」中的参与方式（与 EventType 正交：同一 Type 也可由服务端标不同策略）
+enum SyncEventReplayTier {
+  SYNC_EVENT_REPLAY_TIER_UNSPECIFIED = 0;
+  /// 必须参与回放：影响最终状态（撤回/编辑/删除/会话变更/置顶标记等）
+  SYNC_EVENT_REPLAY_TIER_CRITICAL = 1;
+  /// 可不逐条回放：服务端聚合为读模型最终态（已读、反应等）
+  SYNC_EVENT_REPLAY_TIER_AGGREGATABLE = 2;
+  /// 不参与历史同步：登录后靠订阅（输入中、在线、通话信令等）
+  SYNC_EVENT_REPLAY_TIER_EPHEMERAL = 3;
+}
+
+/// 拉事件流时的预设，减少客户端漏配 EventType（与 QueryEventsSync.event_types 二选一或叠加由实现约定）
+enum EventReplayPreset {
+  EVENT_REPLAY_PRESET_UNSPECIFIED = 0;
+  /// 仅强一致关键事件（默认安全路径）
+  EVENT_REPLAY_PRESET_CRITICAL_ONLY = 1;
+  /// 含可聚合类（服务端可返回聚合结果而非全量事件）
+  EVENT_REPLAY_PRESET_INCLUDE_AGGREGATABLE = 2;
+  /// 全部持久化事件（慎用，体积大）
+  EVENT_REPLAY_PRESET_ALL_PERSISTED = 3;
+}
+
+/// 服务端对客户端的恢复建议（design §七：seq 过期 / 缺口时重拉快照）
+enum SyncRecoveryHint {
+  SYNC_RECOVERY_HINT_NONE = 0;
+  /// 重新走冷启动快照 + 事件
+  SYNC_RECOVERY_HINT_REFETCH_SNAPSHOT = 1;
+  /// 仅从当前事件游标续拉（快照仍有效）
+  SYNC_RECOVERY_HINT_REPLAY_EVENTS = 2;
+  /// 重置单会话同步状态
+  SYNC_RECOVERY_HINT_RESYNC_CONVERSATION = 3;
+}
+
+// -----------------------------------------------------------------------------
+// 会话级双游标：消息可见水位 + 关键事件回放水位（design：快照 vs 事件日志）
+// -----------------------------------------------------------------------------
+
+message SyncConversationCheckpoint {
+  string conversation_id = 1;
+  /// 读模型上「已见的最后一条消息 seq」（用于消息分页与对账）
+  uint64 last_visible_message_seq = 2;
+  /// 关键事件流已应用到本地的最大 seq（幂等上界，可与 message seq 同序或独立空间—由实现文档约定）
+  uint64 last_critical_event_seq = 3;
+  google.protobuf.Timestamp updated_at = 4;
+}
+
+/// seq 缺口 / 快照过期时的结构化上下文（便于客户端埋点与文案）
+message SyncStaleContext {
+  string conversation_id = 1;
+  /// 客户端上报的 seq（消息或事件，由调用方约定）
+  uint64 client_reported_seq = 2;
+  /// 服务端可提供的最早可用 seq（若未知则为 0）
+  uint64 server_earliest_available_seq = 3;
+  SyncRecoveryHint recommended_action = 4;
+}
+
+/// 下行通用提示：恢复策略、国际化、分批渲染建议（best_practice §六 batchApply）
+message SyncSessionHints {
+  SyncRecoveryHint recovery_hint = 1;
+  string localization_key = 2;
+  map<string, string> localization_params = 3;
+  /// 建议每批 apply 事件条数（如 50），0 表示由客户端默认
+  int32 suggested_event_apply_batch_size = 4;
+  /// 会话内消息序可见上限（与服务端读模型对账）
+  uint64 server_visible_max_seq = 5;
+  /// 事件流水位（与会话内 EventEnvelope.max_seq 对齐，供客户端检测缺口）
+  uint64 server_event_stream_max_seq = 6;
+}
+
+// -----------------------------------------------------------------------------
+// 事件流 ACK（design §四 ACK + EventEnvelope.window_id）
+// -----------------------------------------------------------------------------
+
+message EventStreamAckSync {
+  string conversation_id = 1;
+  /// 对应 EventEnvelope.window_id，确认本批已落盘/可丢弃重传
+  string window_id = 2;
+  /// 已应用到本地的最大 seq（幂等：后续仅处理 > 此值的事件）
+  uint64 applied_through_seq = 3;
+  string device_id = 4;
+}
+
+message EventStreamAckSyncRes {}
+
+// -----------------------------------------------------------------------------
+// 编排快照 / 会话水位（原 sync.proto 独立 RPC 收敛至此，便于网关 ExecuteSync 直转）
+// -----------------------------------------------------------------------------
+
+message SnapshotConversationRow {
+  string conversation_id = 1;
+  repeated Message messages = 2;
+  int64 last_seq = 3;
+  google.protobuf.Timestamp last_timestamp = 4;
+  int32 unread_count = 5;
+}
+
+message SyncSnapshotSync {
+  repeated string conversation_ids = 1;
+  int32 messages_per_conversation = 2;
+  bool include_deleted = 3;
+  bool include_conversations = 4;
+  string snapshot_cursor = 5;
+}
+
+message SyncSnapshotSyncRes {
+  repeated SnapshotConversationRow conversations = 1;
+  int64 snapshot_seq = 2;
+  google.protobuf.Timestamp snapshot_timestamp = 3;
+  string next_cursor = 4;
+  bool has_more = 5;
+}
+
+message ConversationMaxSeqSync {
+  string conversation_id = 1;
+}
+
+message ConversationMaxSeqSyncRes {
+  int64 max_seq = 1;
+  google.protobuf.Timestamp last_timestamp = 2;
+  string last_message_id = 3;
+}
+
+// -----------------------------------------------------------------------------
+// 上行：Sync
+// -----------------------------------------------------------------------------
+
+enum SyncKind {
+  SYNC_KIND_UNSPECIFIED = 0;
+  SYNC_KIND_SINGLE_CONVERSATION = 1;        // 单会话消息增量（主路径）
+  SYNC_KIND_MULTI_CONVERSATION = 2;         // 多会话批量增量（可选优化）
+  SYNC_KIND_CONVERSATIONS_INCREMENTAL = 3;  // 会话列表增量（主路径）
+  SYNC_KIND_CONVERSATIONS_ALL = 4;          // 会话列表全量（冷启动/回退）
+  SYNC_KIND_CONVERSATION_DETAIL = 5;        // 会话详情（按需）
+  SYNC_KIND_QUERY_EVENTS = 7;               // 关键事件回放（主路径）
+  SYNC_KIND_GET_SYNC_CURSOR = 8;            // 获取同步游标（主路径）
+  SYNC_KIND_UPDATE_SYNC_CURSOR = 9;         // 更新同步游标（主路径）
+  /// 事件批确认（与 EventEnvelope.window_id 配合）
+  SYNC_KIND_EVENT_STREAM_ACK = 10;
+  /// 跨会话快照（编排层：会话列表 + 每会话最近 N 条等，供网关节点直转）
+  SYNC_KIND_SYNC_SNAPSHOT = 11;
+  /// 单会话 max_seq 水位（编排层）
+  SYNC_KIND_CONVERSATION_MAX_SEQ = 12;
+  reserved 6; // 保留历史 CUSTOM kind，避免复用造成兼容问题
+}
+
+message Sync {
+  SyncKind kind = 1;
+  string device_id = 2;
+  reserved 15; // 保留历史 custom_sync 槽位
+  oneof payload {
+    SingleConversationSync single_conversation = 10;
+    MultiConversationSync multi_conversation = 11;
+    ConversationsIncrementalSync conversations_incremental = 12;
+    ConversationsAllSync conversations_all = 13;
+    ConversationDetailSync conversation_detail = 14;
+    QueryEventsSync query_events = 16;
+    GetSyncCursorSync get_sync_cursor = 17;
+    UpdateSyncCursorSync update_sync_cursor = 18;
+    EventStreamAckSync event_stream_ack = 19;
+    SyncSnapshotSync sync_snapshot = 20;
+    ConversationMaxSeqSync conversation_max_seq = 21;
+  }
+}
+
+message SingleConversationSync {
+  string conversation_id = 1;
+  uint64 max_seq = 2;
+  string cursor = 3;
+  int32 limit = 4;
+}
+
+message MultiConversationSync {
+  repeated string conversation_ids = 1;
+  map<string, uint64> last_seq_per_conversation = 2;
+  int32 limit_per_conversation = 3;
+}
+
+message ConversationsIncrementalSync {
+  google.protobuf.Timestamp client_conversation_cursor = 1;
+  int32 limit = 2;
+}
+
+message ConversationsAllSync {
+  ConversationSyncAllOptions sync_options = 1;
+}
+
+message ConversationDetailSync {
+  string conversation_id = 1;
+}
+
+message QueryEventsSync {
+  string conversation_id = 1; // 为空表示由实现约定（全量或拒绝）
+  int64 after_seq = 2;
+  int64 before_seq = 3;
+  int32 limit = 4;
+  repeated EventType event_types = 5;
+  bool include_deleted = 6;
+  /// 事件回放预设（与 event_types 并存时：以服务端合并策略为准）
+  EventReplayPreset replay_preset = 7;
+  /// 客户端自报的「已应用事件 seq」，服务端可返回 REFETCH_SNAPSHOT（design 幂等与缺口）
+  uint64 client_last_applied_event_seq = 8;
+}
+
+message GetSyncCursorSync {
+  reserved 1;
+  reserved "user_id";
+  string device_id = 2;
+  string conversation_id = 3;
+}
+
+message UpdateSyncCursorSync { MultiDeviceCursor cursor = 1; }
+
+// -----------------------------------------------------------------------------
+// 下行：SyncRes
+// -----------------------------------------------------------------------------
+
+message SyncRes {
+  oneof payload {
+    SingleConversationSyncRes single_conversation = 10;
+    MultiConversationSyncRes multi_conversation = 11;
+    ConversationsIncrementalSyncRes conversations_incremental = 12;
+    ConversationsAllSyncRes conversations_all = 13;
+    ConversationDetailSyncRes conversation_detail = 14;
+    QueryEventsSyncRes query_events = 16;
+    GetSyncCursorSyncRes get_sync_cursor = 17;
+    UpdateSyncCursorSyncRes update_sync_cursor = 18;
+    EventStreamAckSyncRes event_stream_ack_res = 19;
+    SyncSnapshotSyncRes sync_snapshot_res = 20;
+    ConversationMaxSeqSyncRes conversation_max_seq_res = 21;
+  }
+}
+
+message SingleConversationSyncRes {
+  string conversation_id = 1;
+  repeated SyncSliceItem items = 2;
+  uint64 max_seq = 3;
+  string next_cursor = 4;
+  bool has_more = 5;
+  SyncSessionHints hints = 6;
+  SyncStaleContext stale = 7;
+}
+
+message MultiConversationSyncRes {
+  repeated ConversationSyncSlice slices = 1;
+  map<string, uint64> max_seq_per_conversation = 2;
+  bool has_more = 3;
+  SyncSessionHints hints = 4;
+}
+
+message ConversationsIncrementalSyncRes {
+  repeated ConversationPatch patches = 1;
+  google.protobuf.Timestamp server_conversation_cursor = 2;
+  bool has_more = 3;
+  SyncSessionHints hints = 4;
+}
+
+message ConversationsAllSyncRes {
+  repeated ConversationSummary conversations = 1;
+  google.protobuf.Timestamp server_conversation_cursor = 2;
+  uint64 server_max_seq = 3;
+  map<string, string> metadata = 4;
+  SyncSessionHints hints = 5;
+}
+
+message ConversationDetailSyncRes {
+  ConversationDetail detail = 1;
+  map<string, string> metadata = 2;
+  SyncSessionHints hints = 3;
+}
+
+message QueryEventsSyncRes {
+  EventEnvelope envelope = 1;
+  SyncSessionHints hints = 2;
+  SyncStaleContext stale = 3;
+}
+
+message GetSyncCursorSyncRes {
+  MultiDeviceCursor cursor = 1;
+  SyncSessionHints hints = 2;
+}
+
+message UpdateSyncCursorSyncRes {
+  MultiDeviceCursor cursor = 1;
+  SyncSessionHints hints = 2;
+}
+
+// -----------------------------------------------------------------------------
+// 下行结构复用
+// -----------------------------------------------------------------------------
+
+message SyncSliceItem {
+  uint64 seq = 1;
+  google.protobuf.Timestamp created_at = 2;
+  bytes payload = 3;
+}
+
+message ConversationSyncSlice {
+  string conversation_id = 1;
+  repeated SyncSliceItem items = 2;
+  uint64 max_seq = 3;
+  string next_cursor = 4;
+  bool has_more = 5;
+}
+
+enum ConversationPatchType {
+  CONVERSATION_PATCH_UNSPECIFIED = 0;
+  CONVERSATION_PATCH_LIGHT = 1;
+  CONVERSATION_PATCH_SUMMARY = 2;
+  CONVERSATION_PATCH_REMOVED = 3;
+  CONVERSATION_PATCH_CREATED = 4;
+  CONVERSATION_PATCH_DETAIL_REQUIRED = 5;
+}
+
+message ConversationPatch {
+  string conversation_id = 1;
+  ConversationPatchType patch_type = 2;
+  ConversationLight light = 10;
+  ConversationSummary summary = 11;
+  google.protobuf.Timestamp patched_at = 13;
+}
+
+message ConversationSyncAllOptions {
+  bool include_archived = 1;
+  bool include_deleted = 2;
+  int32 max_batch_size = 3;
+}
+
+// -----------------------------------------------------------------------------
+// 多端游标：消息同步 seq + 关键事件回放 seq（与双游标设计对齐）
+// -----------------------------------------------------------------------------
+
+message MultiDeviceCursor {
+  reserved 1;
+  reserved "user_id";
+  string device_id = 2;
+  string conversation_id = 3;
+  /// 消息/读模型侧同步游标（如已读到的 message seq）
+  uint64 last_sync_seq = 4;
+  google.protobuf.Timestamp last_sync_at = 5;
+  uint64 last_read_seq = 6;
+  /// 关键事件流已确认游标（可与 last_sync_seq 同序或独立，由实现约定）
+  uint64 last_critical_event_seq = 7;
+}

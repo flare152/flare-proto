@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+package flare.common.v1;
+
+import "sync.proto";
+
+// =============================================================================
+// DATA 通道：控制面/扩展面载荷（不占会话 seq、不落事件表）
+// =============================================================================
+// 与 ack / event / message 分离：本文件仅用于 PayloadCommand.DATA。
+// 约定：
+// - 同步控制面（Sync/SyncRes）走 DATA，不再复用 EVENT_SYNC。
+// - 用户自定义扩展走 USER_CUSTOM。
+
+enum DataKind {
+  DATA_KIND_UNSPECIFIED = 0;
+  DATA_KIND_SYNC_REQUEST = 1;
+  DATA_KIND_SYNC_RESPONSE = 2;
+  DATA_KIND_USER_CUSTOM = 3;
+}
+
+message CustomData {
+  string type = 1;       // 业务类型标识，如 "badge" / "config"
+  bytes payload = 2;     // 业务载荷
+  map<string, string> metadata = 3;
+}
+
+/// DATA 统一包：SDK 与网关统一按 kind 解析
+message DataPacket {
+  DataKind kind = 1;
+  oneof payload {
+    Sync sync_request = 10;
+    SyncRes sync_response = 11;
+    CustomData user_custom = 12;
+  }
+}

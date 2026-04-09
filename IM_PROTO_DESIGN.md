@@ -9,9 +9,9 @@
 
 | Bounded Context | 职责 | Proto 映射 | 聚合根 / 读模型 |
 |-----------------|------|------------|------------------|
-| **Connection** | 长连接生命周期、认证、心跳、设备绑定 | common/transport.proto (ClientPacket/ServerPacket), online.proto | ConnectionId, DeviceSession |
+| **Connection** | 长连接生命周期、认证、心跳、设备绑定 | common/transport_data.proto (DATA 通道自定义载荷), online.proto | ConnectionId, DeviceSession |
 | **Message** | 消息发送、会话内顺序、消息 FSM | common/message.proto, common/event.proto | Message (seq 为序)，Event 流 |
-| **Session** | 会话列表、未读、游标、预览（读模型） | common/conversation_models.proto, common/sync.proto | ConversationLight, ConversationSummary |
+| **Session** | 会话列表、未读、游标、预览（读模型） | common/conversation.proto, common/sync.proto | ConversationLight, ConversationSummary |
 | **Sync** | 按会话拉取事件、会话列表增量 | common/sync.proto, common/event.proto | EventEnvelope, ConversationPatch |
 | **Presence** | 在线状态、输入状态 | common/event.proto (PresenceEvent, TypingEvent) | 无聚合根，事件即状态 |
 | **Push** | 离线推送、回执 | common/ack.proto, push.proto | - |
@@ -26,7 +26,7 @@
 ### 2.1 Command（写侧）
 
 - **SendMessage**：客户端上行一条消息草稿（Message，仅填可写字段）；服务端写事件流，分配 server_id/seq/timestamp，并产生 `Event(EVENT_MESSAGE, message)`。
-- **ExecuteEvent**：所有“操作类”变更统一入口：撤回、编辑、删除、已读、反应、置顶、标记等，均编码为 `Event(type + payload)`，服务端写事件流并回 `OperationAck(request_id)`。
+- **ExecuteEvent**：所有“操作类”变更统一入口：撤回、编辑、删除、已读、反应、置顶、标记等，均编码为 `Event(type + payload)`，服务端写事件流并回 `OperationResponse(request_id + RpcStatus)`。
 - 长连接：ClientPacket 中 `send_message = Message`、`send_event = Event`，与 gRPC 的 SendMessage / ExecuteEvent 语义一致。
 
 ### 2.2 Query（读侧）
@@ -60,7 +60,7 @@ CREATED → SENT → DELIVERED → READ
 ## 4. 连接与传输（Connection BC）
 
 - **ClientPacket**：oneof { send_message(Message), send_event(Event), sync_request, sync_conversations, sync_conversations_all, get_conversation_detail, push_ack }。
-- **ServerPacket**：oneof { event_envelope, send_ack, operation_ack, sync_resp, sync_conversations_resp, ..., custom_push, error }。
+- **ServerPacket**：oneof { event_envelope, send_ack, operation_response, sync_resp, sync_conversations_resp, ..., custom_push, error }。
 - 认证 / 租户 / 操作者：连接建立时或首包从 metadata/Token 解析，不在每条 ClientPacket 重复。
 
 ---
@@ -82,24 +82,39 @@ common/
   errors.proto      # ErrorCode、RpcStatus、RetryAdvice、ErrorDetail
   message.proto     # Message（聚合根）、MessageStatus（FSM）、MessageTimeline/MessageReadRecord（按需）
   message_content.proto  # MessageContent oneof、MessageType、各 Content 类型
-  message_extended.proto # EditHistory、Reaction、ThreadInfo、PinnedMessageInfo、OfflinePushInfo、MarkedMessageInfo（依赖 enums）
+  event.proto # 领域事件（含 Pin/Reaction/Mark/Edit 等事件 payload）
+  models.proto # 查询读模型（PinnedMessageInfo、Reaction、EditHistory、ThreadInfo、MarkedMessageInfo，由事件流产生、按需返回）
   event.proto       # Event、EventType、EventEnvelope、所有 *Event payload（依赖 message、enums）
   sync.proto        # SyncRequest/Response、ConversationSync*、ConversationPatch
-  conversation_models.proto # ConversationLight/Summary/Detail、MessagePreview（读模型）
-  transport.proto   # ClientPacket、ServerPacket、CustomPushData
-  ack.proto         # SendAck、OperationAck、PushAck、SendEnvelopeAck、ErrorPacket
+  conversation.proto # ConversationLight/Summary/Detail、MessagePreview（读模型）
+  transport_data.proto  # DATA 通道自定义载荷（CustomPushData），不占会话 seq
+  ack.proto         # SendAck、OperationResponse、PushAck、SendEnvelopeAck、ErrorPacket
 ```
 
-**依赖顺序（无环）**：enums → message_content；message_extended → enums, message_content；message → message_content, message_extended；event → enums, message；sync → event, conversation_models；transport → message, event, ack, sync。
+**依赖顺序（无环）**：enums → message_content；message → message_content；models → enums, message_content；event → enums, message；sync → event, conversation；transport_data 仅定义 CustomPushData，无依赖。
 
 - 服务层（message.proto RPC、conversation.proto、access_gateway.proto、push.proto、online.proto、router.proto、storage.proto、hooks.proto、media.proto）仅定义 RPC 与专属 Request/Response，身份与错误复用 common。
+
+### 6.1 服务边界（与白皮书三条流对齐）
+
+| 服务 | 职责 | 白皮书对应 |
+|------|------|------------|
+| **RouterService** (router.proto) | 实时信令中枢：SVID/分片路由、SelectPushTargets/GetDeviceRoute、流控；不访问 DB、不作事件总线 | §2 |
+| **MessageService** (message.proto) | 写路径入口：SendMessage、ExecuteEvent(Event)；操作便捷 RPC；查询可委托 Storage Reader | §1.2 实时信令流、Orchestrator |
+| **StorageReaderService** (storage.proto) | 只读查询与读模型；写仅由 Kafka Writer 消费，无 gRPC 写 | §3、§1.2 查询流 |
+| **ConversationService** (conversation.proto) | 会话 CRUD、列表/增量同步、游标与未读、Thread；与 common/sync 语义一致 | §6 多端同步 |
+| **OnlineService** (online.proto) | 连接生命周期（Login/Logout/Heartbeat）、在线状态与设备；Router 选端依赖 | §2.4 |
+| **PushService** (push.proto) | 消息/通知推送、模板、调度、ACK；消费 push.tasks，调 Router 选端 | §4.1 |
+| **AccessGateway** (access_gateway.proto) | 业务系统→客户端推送、连接查询、信令 Pub/Sub | Gateway 无状态代理 |
+| **HookExtension / HookService** (hooks.proto) | 消息/推送/会话/在线生命周期 Hook 执行与配置 | §4.1 hook.requests |
+| **MediaService** (media.proto) | 上传/下载、分片、引用、图片视频处理、ACL/桶 | 查询流可直连 |
 
 ---
 
 ## 7. Rust 侧落地要点
 
 - **Domain**：Message 聚合根、Event 枚举与 payload、Conversation 读模型；Command/Query 严格分离。
-- **Application**：SendMessage → 写 Event(EVENT_MESSAGE)；ExecuteEvent → 写对应 Event 并回 OperationAck；SyncRequest → 从读模型或事件流返回 EventEnvelope。
+- **Application**：SendMessage → 写 Event(EVENT_MESSAGE)；ExecuteEvent → 写对应 Event 并回 OperationResponse；SyncRequest → 从读模型或事件流返回 EventEnvelope。
 - **Infrastructure**：gRPC/WebSocket/QUIC 从 metadata 取 tenant_id/actor_id/request_id；序列化使用 prost/tonic，与 proto 一一对应。
 - **FSM**：Message 状态变更仅通过 Event（RECALL/EDIT/DELETE/READ 等）驱动，避免裸改 status 字段。
 
@@ -178,7 +193,7 @@ pub enum MessageEvent {
 // application/port.rs
 pub trait MessageCommandPort: Send + Sync {
     async fn send_message(&self, ctx: &RequestContext, draft: MessageDraft) -> Result<SendResult>;
-    async fn execute_event(&self, ctx: &RequestContext, event: Event) -> Result<OperationAck>;
+    async fn execute_event(&self, ctx: &RequestContext, event: Event) -> Result<OperationResponse>;
 }
 
 pub trait SyncQueryPort: Send + Sync {
@@ -220,7 +235,7 @@ pub async fn handle_client_packet(packet: ClientPacket, ctx: RequestContext) -> 
         }
         Some(client_packet::Payload::SendEvent(e)) => {
             let ack = message_command_port.execute_event(&ctx, Event::from_proto(e)).await?;
-            Ok(ServerPacket { payload: Some(server_packet::Payload::OperationAck(ack)) })
+            Ok(ServerPacket { payload: Some(server_packet::Payload::OperationResponse(resp)) })
         }
         Some(client_packet::Payload::SyncRequest(req)) => {
             let envelope = sync_query_port.sync_events(&req.conversation_id, req.last_seq, req.limit).await?;

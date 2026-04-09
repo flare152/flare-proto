@@ -1,0 +1,149 @@
+syntax = "proto3";
+
+package flare.common.v1;
+
+import "google/protobuf/timestamp.proto";
+
+/// =============================================================================
+/// 核心上下文（IM 主链路：必须极简）
+/// 说明：
+/// - 优先通过 gRPC metadata 传递（x-request-id / x-trace-id / x-user-id / x-tenant-id）
+/// - 仅在长连接首包 / 特殊场景下放入 body
+/// =============================================================================
+message CoreContext {
+  string request_id = 1;
+  string trace_id = 2;
+
+  string user_id = 3;
+  string tenant_id = 4;
+
+  string device_id = 5;
+  string platform = 6; // ios/android/web/pc
+}
+
+/// =============================================================================
+/// 扩展上下文（按需使用，不进主链路）
+/// =============================================================================
+message ExtendedContext {
+  map<string, string> attributes = 1;
+}
+
+/// 操作者类型（鉴权与审计）
+enum ActorType {
+  ACTOR_TYPE_UNSPECIFIED = 0;
+  ACTOR_TYPE_USER = 1;
+  ACTOR_TYPE_SERVICE = 2;
+  ACTOR_TYPE_TENANT_ADMIN = 3;
+  ACTOR_TYPE_SYSTEM = 4;
+  ACTOR_TYPE_GUEST = 5;
+}
+
+/// 操作者上下文（RBAC roles、审计 actor）
+message ActorContext {
+  string actor_id = 1;
+  ActorType type = 2;
+  repeated string roles = 3;
+  map<string, string> attributes = 4;
+}
+
+
+/// =============================================================================
+/// 推送专用设备上下文（仅 Push / 在线状态使用）
+/// =============================================================================
+message DeviceContext {
+  string device_id = 1;
+  string platform = 2;
+  DevicePriority priority = 3;
+}
+
+/// 审计上下文（敏感操作记录）
+message AuditContext {
+  ActorContext actor = 1;
+  google.protobuf.Timestamp operated_at = 2;
+  string reason = 3;
+  map<string, string> metadata = 4;
+}
+/// =============================================================================
+/// 通用结构
+/// =============================================================================
+
+/// 设备优先级（多端推送选端：BEST_DEVICE 等）
+enum DevicePriority {
+  DEVICE_PRIORITY_UNSPECIFIED = 0;
+  DEVICE_PRIORITY_LOW = 1;      /// 后台/离线
+  DEVICE_PRIORITY_NORMAL = 2;
+  DEVICE_PRIORITY_HIGH = 3;     /// 当前使用设备
+  DEVICE_PRIORITY_CRITICAL = 4; /// 强制推送、忽略免打扰
+}
+
+/// 连接质量（跨机房/选端可选参考）
+message ConnectionQuality {
+  int64 rtt_ms = 1;
+  double packet_loss_rate = 2;
+  int64 last_measure_ts = 3;
+  string network_type = 4;   /// wifi/4g/5g
+  int32 signal_strength = 5;
+}
+
+enum SortDirection {
+  SORT_DIRECTION_UNSPECIFIED = 0;
+  SORT_DIRECTION_ASC = 1;
+  SORT_DIRECTION_DESC = 2;
+}
+
+/// 排序（会话列表/消息列表排序）
+message SortExpression {
+  string field = 1;
+  SortDirection direction = 2;
+}
+
+/// 过滤操作符（查询/搜索）
+enum FilterOperator {
+  FILTER_OPERATOR_UNSPECIFIED = 0;
+  FILTER_OPERATOR_EQ = 1;
+  FILTER_OPERATOR_NE = 2;
+  FILTER_OPERATOR_IN = 3;
+  FILTER_OPERATOR_NOT_IN = 4;
+  FILTER_OPERATOR_GT = 5;
+  FILTER_OPERATOR_GE = 6;
+  FILTER_OPERATOR_LT = 7;
+  FILTER_OPERATOR_LE = 8;
+  FILTER_OPERATOR_CONTAINS = 9;
+}
+
+/// 过滤条件（多条件 AND）
+message FilterExpression {
+  string field = 1;
+  FilterOperator op = 2;
+  repeated string values = 3;
+}
+
+/// 时间范围（存储 §3.4 按 time range 查询）
+message TimeRange {
+  google.protobuf.Timestamp start_time = 1;
+  google.protobuf.Timestamp end_time = 2;
+}
+
+/// 分页（cursor/limit/has_more；Sync、历史消息、会话列表通用）
+message Pagination {
+  string cursor = 1;
+  int32 limit = 2;
+  bool has_more = 3;
+  string previous_cursor = 4;
+  int64 total_size = 5;
+}
+
+/// 媒体附件（消息内引用；上传走 Media 服务）
+message MediaAttachment {
+  string file_id = 1;
+  string file_name = 2;
+  string mime_type = 3;
+  int64 size = 4;
+  string url = 5;
+  string cdn_url = 6;
+  int64 duration_ms = 7;
+  string checksum = 8;
+  map<string, string> metadata = 9;
+}
+
+

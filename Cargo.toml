@@ -2,7 +2,7 @@
 name = "flare-proto"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.94.0"
 authors = ["Flare Team"]
 license = "MIT"
 description = "Flare IM gRPC Protocol Definitions - Shared protocol definitions for both client and server"
@@ -18,15 +18,11 @@ exclude = [
 ]
 
 [build-dependencies]
-tonic-prost-build = "0.14"
+prost-build = "0.14"
 
 [dependencies]
 prost = "0.14"
 prost-types = "0.14"
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tonic = "0.14"
-tonic-prost = "0.14"
 
 [features]
 default = []

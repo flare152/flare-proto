@@ -52,24 +52,16 @@ impl MessageContentExt for MessageContent {
     }
 }
 
-/// 从 Message 中编码 content 字段为字节数组
-///
-/// # 性能优化
-/// - 如果 Message.content 为 None，返回空 Vec（避免分配）
-/// - 使用预分配缓冲区（根据 encoded_len 估算）
+/// 从 Message 中取出 content 字节（Message.content 即已序列化的 MessageContent）
 ///
 /// # 参数
-/// - `message: &crate::common::Message` - 包含 MessageContent 的 Message
+/// - `message: &crate::common::Message` - 含 content 字段的 Message
 ///
 /// # 返回
-/// - `Vec<u8>` - 编码后的字节数组（如果 content 为 None，返回空 Vec）
+/// - `Vec<u8>` - content 字节（空则返回空 Vec）
 #[inline]
 pub fn encode_message_content(message: &crate::common::Message) -> Vec<u8> {
-    message
-        .content
-        .as_ref()
-        .and_then(|c| c.encode_to_bytes().ok())
-        .unwrap_or_default()
+    message.content.clone()
 }
 
 /// 从字节数组解码为 MessageContent
@@ -119,27 +111,5 @@ mod tests {
         let message = crate::common::Message::default();
         let encoded = encode_message_content(&message);
         assert!(encoded.is_empty());
-    }
-
-    #[test]
-    fn test_encode_message_content_some() {
-        let mut message = crate::common::Message::default();
-        let mut content = MessageContent::default();
-        content.content = Some(Content::Text(TextContent {
-            text: "Test".to_string(),
-            mentions: Vec::new(),
-        }));
-        message.content = Some(content);
-
-        let encoded = encode_message_content(&message);
-        assert!(!encoded.is_empty());
-
-        let decoded = decode_message_content(&encoded).unwrap();
-        match decoded.content {
-            Some(Content::Text(text_content)) => {
-                assert_eq!(text_content.text, "Test");
-            }
-            _ => panic!("Expected Text content"),
-        }
     }
 }

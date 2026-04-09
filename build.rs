@@ -1,109 +1,64 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 尝试编译 protobuf 文件
     let compile_result = compile_protos();
-    
-    // 如果编译失败
+
     if let Err(e) = compile_result {
-        // 检查是否是 protoc 未找到的错误
         let error_msg = format!("{}", e);
-        if error_msg.contains("Could not find `protoc`") || error_msg.contains("protoc") {
-            // 检查 OUT_DIR 中是否已有生成的文件
+        if error_msg.contains("Could not find `protoc`") {
             let out_dir = std::env::var("OUT_DIR")?;
-            let generated_files = [
-                "flare.common.v1.rs",
-                "flare.signaling.online.rs",
-                "flare.signaling.router.rs",
-                "flare.push.v1.rs",
-                "flare.storage.v1.rs",
-                "flare.media.v1.rs",
-                "flare.hooks.v1.rs",
-                "flare.conversation.v1.rs",
-                "flare.message.v1.rs",
-                "flare.access_gateway.v1.rs",
-            ];
-            
-            let all_files_exist = generated_files.iter().all(|file| {
-                std::path::Path::new(&out_dir).join(file).exists()
-            });
-            
+            let generated_files = ["flare.common.v1.rs"];
+
+            let all_files_exist = generated_files
+                .iter()
+                .all(|file| std::path::Path::new(&out_dir).join(file).exists());
+
             if all_files_exist {
-                // 文件已存在，使用预生成的文件
                 println!("cargo:warning=protoc not found, using pre-generated protobuf files");
-                println!("cargo:warning=If you modify proto files, install protoc: brew install protobuf");
-                // 标记需要重新运行（如果 proto 文件改变）
-                for proto_file in &[
-                    "proto/common/ack.proto",
-                    "proto/common/conversation_models.proto",
-                    "proto/common/enums.proto",
-                    "proto/common/errors.proto",
-                    "proto/common/event.proto",
-                    "proto/common/metadata.proto",
-                    "proto/common/message.proto",
-                    "proto/common/message_content.proto",
-                    "proto/common/message_extended.proto",
-                    "proto/common/sync.proto",
-                    "proto/common/transport.proto",
-                    "proto/online.proto",
-                    "proto/router.proto",
-                    "proto/push.proto",
-                    "proto/storage.proto",
-                    "proto/media.proto",
-                    "proto/hooks.proto",
-                    "proto/conversation.proto",
-                    "proto/message.proto",
-                    "proto/access_gateway.proto",
-                ] {
+                println!(
+                    "cargo:warning=If you modify proto files, install protoc: brew install protobuf"
+                );
+                for proto_file in PROTO_FILES {
                     println!("cargo:rerun-if-changed={}", proto_file);
                 }
                 return Ok(());
             } else {
-                // 文件不存在，返回错误
                 return Err(Box::new(std::io::Error::new(
                     std::io::ErrorKind::Other,
-                    format!("Failed to compile protobuf files: {}. Please install protoc: brew install protobuf", e)
+                    format!(
+                        "Failed to compile protobuf files: {}. Please install protoc: brew install protobuf",
+                        e
+                    ),
                 )));
             }
         } else {
-            // 其他错误，直接返回
             return Err(e);
         }
     }
-    
+
     Ok(())
 }
 
+const PROTO_FILES: &[&str] = &[
+    "proto/errors.proto",
+    "proto/enums.proto",
+    "proto/metadata.proto",
+    "proto/message_content.proto",
+    "proto/message.proto",
+    "proto/models.proto",
+    "proto/call_signal.proto",
+    "proto/event.proto",
+    "proto/event_bus_envelope.proto",
+    "proto/ack.proto",
+    "proto/conversation.proto",
+    "proto/sync.proto",
+    "proto/topic_envelope.proto",
+    "proto/data.proto",
+    "proto/notification.proto",
+    "proto/whitepaper_schema.proto",
+];
+
 fn compile_protos() -> Result<(), Box<dyn std::error::Error>> {
-    let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
-    let is_wasm = target_arch == "wasm32";
+    let mut cfg = prost_build::Config::new();
 
-    let mut cfg = tonic_prost_build::configure();
-    if is_wasm {
-        cfg = cfg.build_server(false).build_client(false);
-    } else {
-        cfg = cfg.build_server(true).build_client(true);
-    }
-
-    cfg.compile_protos(
-        &[
-            "proto/common/errors.proto",
-            "proto/common/metadata.proto",
-            "proto/common/message.proto",
-            "proto/common/event.proto",
-            "proto/common/ack.proto",
-            "proto/common/conversation_models.proto",
-            "proto/common/sync.proto",  // 含消息/事件同步与会话同步（原 sync_request + sync + conversation_sync）
-            "proto/common/transport.proto",
-            "proto/online.proto",
-            "proto/router.proto",
-            "proto/push.proto",
-            "proto/storage.proto",
-            "proto/media.proto",
-            "proto/hooks.proto",
-            "proto/conversation.proto",
-            "proto/message.proto",
-            "proto/access_gateway.proto",
-        ],
-        &["proto"],
-    )?;
+    cfg.compile_protos(PROTO_FILES, &["proto"])?;
     Ok(())
 }

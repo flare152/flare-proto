@@ -1,0 +1,182 @@
+syntax = "proto3";
+
+package flare.common.v1;
+
+import "google/protobuf/timestamp.proto";
+import "call_signal.proto";
+import "enums.proto";
+import "errors.proto";
+import "message.proto";
+
+// =============================================================================
+// 领域事件（Message/Session BC）- 读扩散下按会话一流，飞书风格
+// =============================================================================
+// 操作编码为 Event(type+payload)，经 Router 到 Orchestrator，写事件流回存储与下行扇出。
+// 会话内 seq 主序；错误通过 gRPC Status details 表达（不再在 proto 响应中携带 RpcStatus/OperationResponse）。
+// 查询读模型（PinnedMessageInfo、Reaction、EditHistory 等）见 common/models.proto。
+//
+// 通话信令（WebRTC）：type=EVENT_CALL_SIGNAL(10)，payload.call_signal 为 CallSignalEvent（common/call_signal.proto）。
+// signal_type：invite/accept/reject/hangup/candidate；payload 存 SDP/ICE 等原始信令。大包 SDP/ICE 可走 DATA 通道（transport_data）
+// DATA 通道（WebrtcSdpOffer/WebrtcSdpAnswer/WebrtcIceCandidate），与 call_id 关联同一通话。
+
+/// 事件批（下行推送或 Sync 返回）
+message EventEnvelope {
+  repeated Event events = 1;  // 本批事件列表
+  uint64 max_seq = 2;  // 本批最大 seq（会话内）
+  bool has_more = 3;  // 是否还有更多
+  string next_cursor = 4;  // 下一页游标
+  string window_id = 5;  // 窗口 ID，用于 PushAck 确认本批
+}
+
+enum EventType {
+  EVENT_TYPE_UNSPECIFIED = 0;
+  EVENT_MESSAGE = 1;  // 新消息
+  EVENT_MESSAGE_RECALL = 2;  // 撤回消息
+  EVENT_MESSAGE_EDIT = 3;  // 编辑消息
+  EVENT_MESSAGE_DELETE = 4;  // 删除消息
+  EVENT_READ_RECEIPT = 5;  // 已读回执
+  EVENT_TYPING = 6;  // 正在输入
+  EVENT_CONVERSATION_UPDATE = 7;  // 会话更新
+  EVENT_CONVERSATION_DELETE = 8;  // 会话删除
+  EVENT_PRESENCE = 9;  // 在线状态
+  EVENT_CALL_SIGNAL = 10;  // 通话信令（CallSignalEvent，适配 WebRTC）
+  EVENT_REACTION = 11;  // 表情反应（添加/移除）
+  EVENT_PIN = 12;  // 置顶消息
+  EVENT_UNPIN = 13;  // 取消置顶
+  EVENT_MARK = 14;  // 标记消息（重要/待办等）
+  EVENT_UNMARK = 15;  // 取消标记
+  EVENT_CUSTOM = 99; // 自定义事件
+}
+
+/// 领域事件：上行/下行共用；operator_id/request_id 由连接或 metadata 注入。
+message Event {
+  string conversation_id = 1;
+  uint64 seq = 2;
+  EventType type = 3;
+  google.protobuf.Timestamp created_at = 4;
+  string event_id = 5;
+  optional uint64 event_seq = 6;
+  optional string request_id = 7;
+
+  oneof payload {
+    Message message = 10;
+    MessageRecallEvent recall = 11;
+    MessageEditEvent edit = 12;
+    MessageDeleteEvent delete = 13;
+    ReadReceiptEvent read = 14;
+    TypingEvent typing = 15;
+    ConversationUpdateEvent conversation = 16;
+    ConversationDeleteEvent conversation_delete = 17;
+    PresenceEvent presence = 18;
+    CallSignalEvent call_signal = 19;  // EVENT_CALL_SIGNAL，见 common/call_signal.proto
+    ReactionEvent reaction = 20;
+    PinEvent pin = 21;
+    UnpinEvent unpin = 22;
+    MarkEvent mark = 23;
+    UnmarkEvent unmark = 24;
+    CustomEvent custom = 99;
+  }
+}
+
+message MessageRecallEvent {
+  string server_msg_id = 1;  // 被撤回消息的服务端 ID
+  string reason = 2;  // 撤回原因（可选展示）
+  optional int32 time_limit_seconds = 3;  // 允许撤回的时间窗口（秒）
+  optional bool allow_admin_recall = 4;  // 是否允许管理员撤回他人消息
+}
+
+message MessageEditEvent {
+  string server_msg_id = 1;  // 被编辑消息的服务端 ID
+  bytes new_content = 2;  // 新内容（按 message_type 序列化的 MessageContent）
+  int32 edit_version = 3;  // 编辑版本号（递增）
+  string reason = 4;  // 编辑原因（可选）
+  bool show_edited_mark = 5;  // 是否展示「已编辑」标记
+}
+
+message MessageDeleteEvent {
+  string server_msg_id = 1;  // 被删除消息的服务端 ID
+  optional DeleteType delete_type = 2;  // 软删/硬删
+  optional string reason = 3;  // 删除原因
+  optional bool notify_others = 4;  // 是否通知会话内其他人
+  optional DeleteScope scope = 5;  // 作用域：仅当前用户可见性 / 会话全员
+  optional string target_user_id = 6;  // 软删时指定生效用户（空表示操作者本人）
+}
+
+message ConversationUpdateEvent {
+  string conversation_id = 1;
+  string title = 2;  // 会话标题（群名等）
+  string avatar = 3;  // 会话头像 URL
+  int32 unread_count = 4;  // 未读数（可选，由服务维护）
+}
+
+message ConversationDeleteEvent {
+  string conversation_id = 1;  // 被删除的会话 ID
+}
+
+/// 已读回执：多端同步后各端 last_read_seq 一致（飞书 style 已读位点）
+message ReadReceiptEvent {
+  string conversation_id = 1;
+  uint64 read_seq = 2;  // 已读到的消息 seq（含该 seq 及之前视为已读）
+  string user_id = 3;  // 已读用户
+  repeated string message_ids = 4;  // 可选：本次已读的消息 ID 列表（细粒度）
+  optional google.protobuf.Timestamp read_at = 5;  // 已读时间
+  optional bool burn_after_read = 6;  // 是否阅后即焚场景
+}
+
+message TypingEvent {
+  string conversation_id = 1;
+  string user_id = 2;  // 正在输入的用户
+  bool typing = 3;  // true=开始输入，false=结束输入
+}
+
+message PresenceEvent {
+  string user_id = 1;
+  string status = 2;  // 在线状态（如 online/offline/away）
+  map<string, string> extra = 3;  // 扩展字段（设备、端等）
+}
+
+message CustomEvent {
+  string namespace = 1;  // 业务命名空间
+  string name = 2;  // 事件名
+  string version = 3;  // 版本（兼容用）
+  bytes payload = 4;  // 业务载荷
+  map<string, string> metadata = 5;
+}
+
+/// 表情反应事件（EVENT_REACTION）：添加或移除某条消息上的 emoji 反应
+message ReactionEvent {
+  string server_msg_id = 1;  // 被反应的消息服务端 ID
+  string user_id = 2;  // 操作用户（谁点的反应）
+  string emoji = 3;  // 表情标识（如 👍、:thumbsup:）
+  ReactionAction action = 4;  // ADD=添加，REMOVE=移除
+}
+
+/// 置顶消息事件（EVENT_PIN）：将某条消息置顶到会话
+message PinEvent {
+  string server_msg_id = 1;  // 被置顶的消息服务端 ID
+  string pinned_by = 2;  // 置顶操作者 user_id
+  optional string reason = 3;  // 置顶说明（可选展示）
+  optional google.protobuf.Timestamp expire_at = 4;  // 置顶过期时间（空表示长期）
+}
+
+/// 取消置顶事件（EVENT_UNPIN）
+message UnpinEvent {
+  string server_msg_id = 1;  // 被取消置顶的消息服务端 ID
+}
+
+/// 标记消息事件（EVENT_MARK）：重要/待办/已处理等（飞书风格标记）
+message MarkEvent {
+  string server_msg_id = 1;  // 被标记的消息服务端 ID
+  string user_id = 2;  // 操作用户（标记归属用户）
+  MarkType mark_type = 3;  // 标记类型：重要/待办/已处理/自定义
+  string color = 4;  // 自定义颜色（可选，如 #FF0000）
+}
+
+/// 取消标记事件（EVENT_UNMARK）
+message UnmarkEvent {
+  string server_msg_id = 1;  // 被取消标记的消息服务端 ID
+  string user_id = 2;  // 操作用户（与 MarkEvent 一致才能取消）
+  MarkType mark_type = 3;  // 要取消的标记类型
+}
+
+
