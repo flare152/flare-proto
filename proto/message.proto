@@ -50,14 +50,12 @@ enum MessageType {
   MESSAGE_TYPE_CARD = 7;  // 名片（联系人/群）
   MESSAGE_TYPE_STICKER = 8;  // 表情贴纸
   MESSAGE_TYPE_EMOJI = 9;  // 表情符号
-  reserved 10;  // 曾为 GIF；动图统一为 MESSAGE_TYPE_IMAGE + ImageContent（GIF + animated）
   MESSAGE_TYPE_LINK_CARD = 11;  // 链接预览卡片
   MESSAGE_TYPE_MERGE_FORWARD = 12;  // 合并转发消息
   MESSAGE_TYPE_MINI_PROGRAM = 13;  // 小程序/应用卡片
   MESSAGE_TYPE_THREAD = 14;  // 话题/子线程根消息
   MESSAGE_TYPE_QUOTE = 15;  // 引用回复
   MESSAGE_TYPE_RICH_TEXT = 30;  // 富文本：Rich Doc 主存储（Markdown/HTML/编辑器均归一化为此）
-  reserved 31;  // 曾为 MARKDOWN，已并入 RICH_TEXT
   MESSAGE_TYPE_IMAGE_GROUP = 32;  // 多图/图组
   MESSAGE_TYPE_SYSTEM = 60;  // 通用系统消息：入群/退群/踢人/解散等由 SystemContent.event_kind 区分
   MESSAGE_TYPE_NOTIFICATION = 61;  // 会话内通知：可推送、角标
